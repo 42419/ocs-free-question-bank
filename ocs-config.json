@@ -1,0 +1,20 @@
+[
+  {
+    "name": "DeepSeek 网页解题",
+    "homepage": "http://127.0.0.1:3000/health",
+    "url": "http://127.0.0.1:3000/search",
+    "method": "post",
+    "type": "GM_xmlhttpRequest",
+    "contentType": "json",
+    "headers": {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer 替换为你自己的随机口令"
+    },
+    "data": {
+      "question": "${title}",
+      "options": { "handler": "return (env) => env.options || ''" },
+      "type": { "handler": "return (env) => env.type || 'unknown'" }
+    },
+    "handler": "return (res) => { if (res.code !== 0) throw new Error(res.message || '查询失败'); return res.data.map(item => [item.question, item.answer]); }"
+  }
+]
