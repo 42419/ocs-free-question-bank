@@ -1,6 +1,6 @@
 [
   {
-    "name": "DeepSeek 网页解题",
+    "name": "OCS 免费搜题题库（DeepSeek 网页版）",
     "homepage": "http://127.0.0.1:3000/health",
     "url": "http://127.0.0.1:3000/search",
     "method": "post",

@@ -1,6 +1,8 @@
-# OCS + DeepSeek 网页桥接
+# OCS 免费搜题题库（DeepSeek 网页版）
 
-现已改为网页模式，不再调用 DeepSeek 付费 API，不需要 DEEPSEEK_API_KEY。本地 Node.js 服务兼容 OCS 4.15.3 和 5.1.0 的 `/search` 题库接口，另一个油猴脚本在你已登录的 DeepSeek 网页领取题目、发送并返回答案。
+为 OCS 提供免费的网页搜题题库：通过本地 Node.js 桥接，把题目发送到你已登录的 DeepSeek 网页，再按 OCS 题库接口返回答案。无需 DeepSeek API Key。它不是预置静态题库，答案由 DeepSeek 根据题目生成。
+
+兼容 OCS 4.15.3 和 5.1.0 的 `/search` 题库接口；网页端操作由单独的油猴桥接脚本完成。
 
 ```text
 OCS 题目 → 本机 Node.js 队列 → DeepSeek 网页桥接油猴脚本
@@ -14,7 +16,7 @@ OCS 题目 → 本机 Node.js 队列 → DeepSeek 网页桥接油猴脚本
 在 PowerShell 运行：
 
 ```powershell
-cd ocs-deepseek-web-bridge
+cd ocs-free-question-bank
 # 第一次使用时复制；已有 .env 就直接编辑，不要覆盖自己的口令。
 Copy-Item .env.example .env
 notepad .env
