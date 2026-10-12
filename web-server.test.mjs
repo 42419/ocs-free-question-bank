@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createServer } from './server.mjs';
+import { createDeepSeekApiSolver } from './deepseek-api.mjs';
 const question = { question: '哪些是质数？', options: '2\n3\n4', type: 'multiple' };
 const answer = id => ({ bridge_id: id, answers: ['2', '3'], explanation: '质数只有两个正因数。' });
 const tick = () => new Promise(resolve => setTimeout(resolve, 10));
@@ -59,6 +60,34 @@ test('browser returns answer through actual HTTP and OCS handler', async t => {
   assert.deepEqual(result.data, [{ question: question.question, answer: '2#3', explanation: '质数只有两个正因数。' }]);
   const [wrapper] = JSON.parse(await readFile(new URL('./ocs-config.json', import.meta.url), 'utf8'));
   assert.deepEqual(Function(wrapper.handler)()(result), [[question.question, '2#3']]);
+});
+test('DeepSeek API backend answers OCS search without a browser bridge', async t => {
+  let request;
+  const apiSolver = createDeepSeekApiSolver({ apiKey: 'test-api-key', fetchImpl: async (url, options) => {
+    request = { url, ...options, body: JSON.parse(options.body) };
+    return Response.json({ choices: [{ finish_reason: 'stop', message: { content: '{"answers":["2","3"],"explanation":"2和3是质数。"}' } }] });
+  } });
+  const { base, post } = await fixture(t, { apiSolver });
+  const health = await (await fetch(base + '/health')).json();
+  assert.deepEqual(health, { status: 'ok', mode: 'deepseek-api', connected: true, queued: 0 });
+  assert.equal((await post('/bridge/connect', { clientId: 'unused' })).status, 404);
+  const response = await post('/search', question);
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).data, [{ question: question.question, answer: '2#3', explanation: '2和3是质数。' }]);
+  assert.equal(request.url, 'https://api.deepseek.com/chat/completions');
+  assert.equal(request.headers.Authorization, 'Bearer test-api-key');
+  assert.equal(request.body.model, 'deepseek-flash');
+  assert.deepEqual(request.body.response_format, { type: 'json_object' });
+  assert.equal(request.body.messages[1].content, JSON.stringify({ question: question.question, options: ['2', '3', '4'], type: 'multiple' }));
+});
+test('DeepSeek API backend reports provider errors without exposing credentials', async t => {
+  const apiSolver = createDeepSeekApiSolver({ apiKey: 'secret-key', fetchImpl: async () => new Response('', { status: 429 }) });
+  const { post } = await fixture(t, { apiSolver });
+  const response = await post('/search', question);
+  assert.equal(response.status, 429);
+  const body = await response.json();
+  assert.match(body.message, /余额不足或请求频率受限/);
+  assert.doesNotMatch(JSON.stringify(body), /secret-key/);
 });
 test('serial queue, capacity, exclusive browser and stale replies', async t => {
   const { post, call } = await fixture(t, { maxQueue: 2 });

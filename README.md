@@ -1,10 +1,10 @@
 # OCS 免费搜题题库（DeepSeek 网页版）
 
-为 OCS 提供免费的网页搜题题库：通过本地 Node.js 桥接，把题目发送到你已登录的 DeepSeek 网页，再按 OCS 题库接口返回答案。无需 DeepSeek API Key。它不是预置静态题库，答案由 DeepSeek 根据题目生成。
+为 OCS 提供本地部署的 DeepSeek 搜题题库：默认网页桥接模式把题目发送到你已登录的 DeepSeek 网页，无需 DeepSeek API Key；另提供需要付费的官方 API 模式。它不是预置静态题库，答案由 DeepSeek 根据题目生成。
 
 > **部署方式：每位使用者都要在自己的电脑部署并运行这套服务。** 我不提供或代运行公共后端，也不需要把 OCS 指向我的服务器；GitHub 仓库只提供代码和配置示例。自己的 OCS、Node.js 服务和已登录 DeepSeek 的浏览器在同一台电脑上协作，默认地址是 `http://127.0.0.1:3000`。
 
-> **费用说明：** 本项目不收费，也不需要购买 DeepSeek API。使用本地服务和 DeepSeek 网页版搜题无需向项目作者付费，希望能帮大家省下一些搜题费用。请注意，DeepSeek 网页的可用性、账号要求和使用限制由 DeepSeek 决定；本项目不保证第三方服务永久免费或始终可用。
+> **费用说明：** 默认的 Windows DeepSeek 网页桥接模式不需要购买 API，也不向项目作者付费，希望能帮大家省一些搜题费用。另提供 DeepSeek 官方 API 后端，适合 Linux 无桌面服务器，但 API 会按 token 计费，**不推荐作为默认方案**。网页服务可用性与规则由 DeepSeek 决定；本项目不保证第三方服务永久免费或始终可用。
 
 > **配置提醒：** OCS 配置中的认证头必须写成 `Bearer 你的口令`，其中 `Bearer` 和口令之间有一个空格。请保留这个空格，并将示例口令替换为你自己的 `API_TOKEN`。
 
@@ -23,7 +23,7 @@ OCS 题目 → 本机 Node.js 队列 → DeepSeek 网页桥接油猴脚本
 
 截图用于展示桥接面板的位置和配置项。截图时面板显示“桥接已暂停或由其他页面持有”，因此不是成功连接的证明；正常运行时应显示“已连接，等待 OCS 题目”，且 `/health` 返回 `connected: true`。
 
-服务无第三方依赖，需要 Node.js 22+。网页操作通过普通页面控件完成，没有调用网页内部接口，也不读取账号密码或 Cookie。DeepSeek 网页服务的限制仍然适用。
+默认网页桥接服务无第三方依赖，需要 Node.js 22+。Windows 用户继续使用 DeepSeek 网页和油猴桥接即可；Linux 无桌面服务器可选择官方 API 模式，但需要 API Key 并产生费用。
 
 ## 网页答题示例
 
@@ -59,12 +59,15 @@ notepad .env
 `.env` 内容：
 
 ```dotenv
+BACKEND=web-bridge
 API_TOKEN=OCS-1234
 PORT=3000
 JOB_TIMEOUT_SECONDS=150
+DEEPSEEK_API_KEY=
+DEEPSEEK_MODEL=deepseek-flash
 ```
 
-旧版 `.env` 中的 DEEPSEEK_API_KEY、DEEPSEEK_MODEL 已不再使用，可以删除。新版固定监听 `127.0.0.1`，旧 HOST 参数不再生效。
+使用 `web-bridge` 模式时，`DEEPSEEK_API_KEY` 留空即可；`DEEPSEEK_MODEL` 只在官方 API 模式中使用。服务固定监听 `127.0.0.1`，不直接开放公网端口。
 
 启动：
 
@@ -133,7 +136,7 @@ DeepSeek 网页会自动出现题目。成功响应示例：
 3. **Chrome 或 Edge、Tampermonkey、DeepSeek 账号**：浏览器中安装 Tampermonkey 扩展，并在这个浏览器里登录 [DeepSeek 网页](https://chat.deepseek.com/)。
 4. **OCS 主脚本**：先按 [OCS 官方项目说明](https://github.com/ocsjs/ocsjs)安装并确认 OCS 可正常打开。本仓库不包含 OCS 主脚本。
 
-本项目没有 npm 依赖，不需要运行 `npm install`，也不需要 DeepSeek API Key。需要访问 DeepSeek 网页，网页账号本身仍受 DeepSeek 的服务规则和使用限制约束。
+网页桥接模式没有 npm 依赖，不需要运行 `npm install` 或 DeepSeek API Key。它需要访问 DeepSeek 网页，网页账号本身仍受 DeepSeek 的服务规则和使用限制约束。
 
 ### 第二步：下载项目并设置本地口令
 
@@ -160,7 +163,7 @@ PORT=3000
 JOB_TIMEOUT_SECONDS=150
 ```
 
-保存并关闭记事本。稍后把这个值原样填入油猴桥接面板和 OCS 配置。不要把自己的口令提交到公开仓库或贴到公开截图里。
+保存并关闭记事本。稍后把这个值原样填入油猴桥接面板和 OCS 配置。不要把自己的口令提交到公开仓库或贴到公开截图里。`BACKEND=web-bridge` 保持默认即可；`DEEPSEEK_API_KEY` 留空。
 
 ### 第三步：启动本地服务
 
@@ -241,6 +244,41 @@ DeepSeek 页面会收到题目并生成回答。成功时 PowerShell 返回 `cod
 把 `Bearer ` 后面的示例文字替换为 `.env` 中的同一口令，保留 `Bearer` 后面的一个空格。「题库连接成功」只表示 OCS 的连通性探测收到响应，不代表网页桥接已连接或题目一定能答完；请用真实题目完成最后验证。
 
 以后每次使用的顺序是：打开项目目录的 PowerShell 并运行 `node --env-file=.env server.mjs` → 在 DeepSeek 网页桥接面板点「启动」并确认连接 → 打开 OCS 开始答题。退出时可先在桥接面板点「暂停」，再按 `Ctrl+C` 关闭服务。
+
+## 可选：Linux 无桌面服务器使用 DeepSeek 官方 API（付费，不推荐）
+
+Linux 无桌面方案目前使用官方 API：不启动浏览器，也不安装油猴脚本，Node.js 服务直接调用 DeepSeek API。当前不提供自动化操作 DeepSeek 网页的无头浏览器方案；DeepSeek 用户协议限制使用机器人等自动方式抓取或复制网页服务内容，详见[用户协议](https://cdn.deepseek.com/policies/zh-CN/deepseek-terms-of-use.html)。**API 按 token 计费，会产生实际费用，因此优先推荐上面的默认网页桥接模式。** 当前价格以 [DeepSeek 官方定价页](https://api-docs.deepseek.com/quick_start/pricing/) 为准。本项目只是调用 API，不代购、不代充，也无法替你控制实际账单。
+
+在 Linux 服务器安装 Node.js 22+，下载项目并编辑 `.env`。配置如下：
+
+```dotenv
+BACKEND=deepseek-api
+API_TOKEN=你自己设置的OCS本地口令
+PORT=3000
+JOB_TIMEOUT_SECONDS=150
+DEEPSEEK_API_KEY=你的DeepSeek官方API密钥
+DEEPSEEK_MODEL=deepseek-flash
+```
+
+这里有两种不同的口令：`API_TOKEN` 是 OCS 访问你这台服务的本地口令；`DEEPSEEK_API_KEY` 是从 DeepSeek 开放平台获取、会产生费用的 API 密钥。只把 API Key 放在服务器自己的 `.env` 中，切勿放进 OCS JSON、油猴脚本或公开仓库。
+
+在项目目录启动服务：
+
+```bash
+node --env-file=.env server.mjs
+```
+
+运行 `curl http://127.0.0.1:3000/health`，应看到 `"mode":"deepseek-api"` 和 `"connected":true`。这只表示 API 后端进程已启动；API Key 是否有效需再用实际题目测试。它不需要 DeepSeek 网页标签页。OCS 仍使用 `ocs-config.json` 中相同的 `/search` 地址和 `Bearer ` 加 `API_TOKEN` 配置。
+
+如果 Linux 服务器与运行 OCS 的浏览器不是同一台电脑，可在运行 OCS 的电脑上建立 SSH 本地端口转发：
+
+```bash
+ssh -N -L 3000:127.0.0.1:3000 用户名@Linux服务器地址
+```
+
+保持 SSH 窗口运行，OCS 仍配置 `http://127.0.0.1:3000/search`，请求会通过加密隧道转到 Linux 服务。停止使用时按 `Ctrl+C` 关闭隧道。不要为了远程访问直接把服务绑定到公网网卡。
+
+API 模式会按每题实际输入、输出 token 计费；高并发或长题目会增加费用。本服务没有 API 消费预算上限，使用者需自行在开放平台查看用量并管理余额。首次使用前请确认账号、余额和当期价格。若要回到 Windows 网页桥接，把 `.env` 的 `BACKEND` 改回 `web-bridge`，并按前面步骤在 DeepSeek 网页启动油猴桥接。
 
 ### 本地接口成功，但 OCS 显示连接失败
 

@@ -121,9 +121,9 @@ function normalize(input) {
   return { question: input.question.trim(), options, type: input.type || 'unknown' };
 }
 
-export function createServer({ token, monitorIntervalMs = 250, ...settings } = {}) {
+export function createServer({ token, monitorIntervalMs = 250, apiSolver = null, jobTimeoutMs = 150000, ...settings } = {}) {
   if (!token || token.trim() !== token || /[\r\n]/.test(token)) throw new Error('请设置有效的 API_TOKEN');
-  const queue = new BridgeQueue(settings);
+  const queue = new BridgeQueue({ ...settings, jobTimeoutMs });
   const monitor = setInterval(() => queue.check(), monitorIntervalMs);
   monitor.unref();
   const routes = new Set(['/search', '/bridge/connect', '/bridge/poll', '/bridge/heartbeat', '/bridge/result', '/bridge/pause']);
@@ -140,8 +140,13 @@ export function createServer({ token, monitorIntervalMs = 250, ...settings } = {
       if (req.method === 'HEAD' && (requestPath === '/' || requestPath === '/search')) {
         return reply(200, {});
       }
-      if (req.url === '/health' && req.method === 'GET') return reply(200, { status: 'ok', mode: 'web-bridge', ...queue.status() });
+      if (req.url === '/health' && req.method === 'GET') {
+        return reply(200, apiSolver
+          ? { status: 'ok', mode: 'deepseek-api', connected: true, queued: 0 }
+          : { status: 'ok', mode: 'web-bridge', ...queue.status() });
+      }
       if (!routes.has(req.url)) throw failure(404, '接口不存在');
+      if (apiSolver && req.url !== '/search') throw failure(404, '当前 API 模式不启用网页桥接接口');
       if (req.method !== 'POST') throw failure(405, '请使用 POST');
       if (req.headers.authorization !== `Bearer ${token}`) throw failure(401, 'API_TOKEN 不正确');
       const body = await readJson(req);
@@ -150,7 +155,22 @@ export function createServer({ token, monitorIntervalMs = 250, ...settings } = {
         const abort = new AbortController();
         const onClose = () => { if (!res.writableEnded) abort.abort(); };
         res.on('close', onClose);
-        try { reply(200, await queue.enqueue(input, abort.signal)); }
+        try {
+          if (apiSolver) {
+            const answer = await apiSolver(input, abort.signal);
+            if (!answer || !Array.isArray(answer.answers) || answer.answers.length > 100 ||
+                answer.answers.some(value => typeof value !== 'string' || !value.trim() || value.length > 12000) ||
+                typeof answer.explanation !== 'string' || answer.explanation.length > 12000 ||
+                (['single', 'judgement'].includes(input.type) && answer.answers.length > 1)) {
+              throw failure(502, 'DeepSeek API 返回的答案格式无效');
+            }
+            reply(200, { code: 0, message: answer.answers.length ? 'success' : '未得到可靠答案',
+              data: answer.answers.length ? [{ question: input.question, answer: answer.answers.map(value => value.trim()).join('#'), explanation: answer.explanation }] : [],
+              explanation: answer.explanation });
+          } else {
+            reply(200, await queue.enqueue(input, abort.signal));
+          }
+        }
         finally { res.off('close', onClose); }
         return;
       }
@@ -163,8 +183,8 @@ export function createServer({ token, monitorIntervalMs = 250, ...settings } = {
       if (req.url === '/bridge/pause') { queue.touch(clientId); queue.pause(); }
       reply(200, { code: 0 });
     } catch (error) {
-      const status = error instanceof BridgeError ? error.status : 500;
-      reply(status, { code: status, message: error instanceof BridgeError ? error.message : '本地桥接服务错误', data: [] });
+      const status = error instanceof BridgeError || Number.isInteger(error?.status) ? error.status : 500;
+      reply(status, { code: status, message: error instanceof BridgeError || Number.isInteger(error?.status) ? error.message : '本地桥接服务错误', data: [] });
     }
   });
   server.requestTimeout = 30000;
@@ -175,12 +195,21 @@ export function createServer({ token, monitorIntervalMs = 250, ...settings } = {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
+    const backend = process.env.BACKEND || 'web-bridge';
+    if (!['web-bridge', 'deepseek-api'].includes(backend)) throw new Error('BACKEND 只能是 web-bridge 或 deepseek-api');
     const port = Number(process.env.PORT || 3000);
     const seconds = Number(process.env.JOB_TIMEOUT_SECONDS || 150);
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT 必须在 1–65535 之间');
     if (!Number.isFinite(seconds) || seconds < 10 || seconds > 170) throw new Error('JOB_TIMEOUT_SECONDS 必须在 10–170 之间');
-    const server = createServer({ token: process.env.API_TOKEN, jobTimeoutMs: seconds * 1000 });
+    let apiSolver = null;
+    if (backend === 'deepseek-api') {
+      const { createDeepSeekApiSolver } = await import('./deepseek-api.mjs');
+      apiSolver = createDeepSeekApiSolver({ apiKey: process.env.DEEPSEEK_API_KEY, model: process.env.DEEPSEEK_MODEL || 'deepseek-flash', timeoutMs: seconds * 1000 });
+    }
+    const server = createServer({ token: process.env.API_TOKEN, jobTimeoutMs: seconds * 1000, apiSolver });
     server.on('error', error => { console.error(`启动失败：${error.code}`); process.exitCode = 1; });
-    server.listen(port, '127.0.0.1', () => console.log(`OCS 网页桥接：http://127.0.0.1:${port}\n请在 DeepSeek 网页桥接面板点击“启动”。不需要 DeepSeek API 密钥。`));
+    server.listen(port, '127.0.0.1', () => console.log(backend === 'deepseek-api'
+      ? `OCS DeepSeek API 后端：http://127.0.0.1:${port}\n此模式会按 DeepSeek API 实时价格计费。`
+      : `OCS 网页桥接：http://127.0.0.1:${port}\n请在 DeepSeek 网页桥接面板点击“启动”。不需要 DeepSeek API 密钥。`));
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }
