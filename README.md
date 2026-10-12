@@ -1,16 +1,16 @@
 # OCS 免费搜题题库（DeepSeek 网页版）
 
-为 OCS 提供本地部署的 DeepSeek 搜题题库：默认网页桥接模式把题目发送到你已登录的 DeepSeek 网页，无需 DeepSeek API Key；另提供需要付费的官方 API 模式。它不是预置静态题库，答案由 DeepSeek 根据题目生成。
+为 OCS 提供本地部署的 DeepSeek 搜题题库：默认网页桥接模式把题目发送到你已登录的 DeepSeek 网页，无需 DeepSeek API Key；另提供需要付费的官方 API 模式。它不是预置静态题库，答案由 DeepSeek 根据题目生成（作者是懒狗，readme都要用AI写，要是不理解的部分直接问叭，然后里面很AI的表述大家也通融一下，谢谢喵）。
 
-> **部署方式：每位使用者都要在自己的电脑部署并运行这套服务。** 我不提供或代运行公共后端，也不需要把 OCS 指向我的服务器；GitHub 仓库只提供代码和配置示例。自己的 OCS、Node.js 服务和已登录 DeepSeek 的浏览器在同一台电脑上协作，默认地址是 `http://127.0.0.1:3000`。
+> **部署方式：每位使用者都要在自己的电脑部署并运行这套服务。** 作者不提供或代运行公共后端（自己电脑跑啦，都上GIThub了自己配置一下很简单的），也不需要把 OCS 指向我的服务器；GitHub 仓库只提供代码和配置示例。自己的 OCS、Node.js 服务和已登录 DeepSeek 的浏览器在同一台电脑上协作，默认地址是 `http://127.0.0.1:3000`。
 
-> **费用说明：** 默认的 Windows DeepSeek 网页桥接模式不需要购买 API，也不向项目作者付费，希望能帮大家省一些搜题费用。另提供 DeepSeek 官方 API 后端，适合 Linux 无桌面服务器，但 API 会按 token 计费，**不推荐作为默认方案**。网页服务可用性与规则由 DeepSeek 决定；本项目不保证第三方服务永久免费或始终可用。
+> **费用说明：** Windows 和 Linux DeepSeek 网页桥接模式都不需要购买 API，也不向项目作者付费，希望能帮大家省一些搜题费用。另提供无需浏览器的 DeepSeek 官方 API 后端，但 API 会按 token 计费，**不推荐作为默认方案**。网页服务可用性与规则由 DeepSeek 决定；本项目不保证第三方服务永久免费或始终可用。（梁子不让用脚本抓网页内容，但是我们偷偷的抓应该没事的）
 
-> **配置提醒：** OCS 配置中的认证头必须写成 `Bearer 你的口令`，其中 `Bearer` 和口令之间有一个空格。请保留这个空格，并将示例口令替换为你自己的 `API_TOKEN`。
+> **配置提醒：** OCS 配置中的认证头必须写成 `Bearer 你的口令`，其中 `Bearer` 和口令之间有一个空格。请保留这个空格，并将示例口令替换为你自己的 `API_TOKEN`。（这个空格是AI写代码的时候加上的，作者觉得实在逆天但是懒得改了）
 
-本项目由 AI 辅助编写，仍需要真实使用者测试和反馈。由于我之后未必还有网课任务，项目不一定会持续更新。欢迎目前有网课任务的同学参与测试，也欢迎有兴趣的开发者接手改进或继续开发；可以通过 GitHub Issues、Pull Requests 或 QQ 1315528099 联系和贡献。
+本项目由 AI 辅助编写，仍需要真实使用者测试和反馈。由于我之后未必还有网课任务，项目不一定会持续更新。欢迎目前有网课任务的同学参与测试，也欢迎有兴趣的开发者接手改进或继续开发；可以通过 GitHub Issues、Pull Requests 或 QQ：1315528099 联系和贡献。（已经不用再上网课力，没东西测试了）
 
-兼容 OCS 4.15.3 和 5.1.0 的 `/search` 题库接口；网页端操作由单独的油猴桥接脚本完成。
+兼容 OCS 4.15.3 和 5.1.0 的 `/search` 题库接口；网页端操作由单独的油猴桥接脚本完成。（简单来讲就是一个网页脚本模拟题库，然后给蓝色肥鱼发问题代替题库搜题，什么？现在题库都要付费，我是学生能先给我转50吗）
 
 ```text
 OCS 题目 → 本机 Node.js 队列 → DeepSeek 网页桥接油猴脚本
@@ -23,7 +23,17 @@ OCS 题目 → 本机 Node.js 队列 → DeepSeek 网页桥接油猴脚本
 
 截图用于展示桥接面板的位置和配置项。截图时面板显示“桥接已暂停或由其他页面持有”，因此不是成功连接的证明；正常运行时应显示“已连接，等待 OCS 题目”，且 `/health` 返回 `connected: true`。
 
-默认网页桥接服务无第三方依赖，需要 Node.js 22+。Windows 用户继续使用 DeepSeek 网页和油猴桥接即可；Linux 无桌面服务器可选择官方 API 模式，但需要 API Key 并产生费用。
+Windows 油猴模式只需要 Node.js 22+，无需安装 npm 依赖。Linux 无头模式另需 Playwright 和 Chromium；首次登录/验证码由用户人工完成，之后使用专用浏览器会话在后台运行。三种模式的选择如下：
+
+| 模式 | 启动方式 | 是否需要 API Key | 浏览器 |
+| --- | --- | --- | --- |
+| Windows 油猴桥接 | `node --env-file=.env server.mjs` + 网页面板启动 | 否 | 自己打开 DeepSeek 网页 |
+| Linux 无头网页桥接 | 同一服务 + `npm run linux:start` | 否 | 后台 Chromium，人工初始化登录 |
+| 官方 API 后端 | `BACKEND=deepseek-api` + 同一服务 | 是，向 DeepSeek 付费 | 不需要 |
+
+两种网页 worker 都使用 `BACKEND=web-bridge`。一个服务同一时间只连接一个 worker，不要同时启动 Windows 油猴面板和 Linux worker。
+
+Linux 浏览器模式也不购买 DeepSeek API；若服务在自己的 Linux 服务器、OCS 在 Windows 上，可用下文的 SSH 隧道连接。日常无头运行可以没有桌面环境，首次人工登录仍需要临时显示浏览器。
 
 ## 网页答题示例
 
@@ -136,7 +146,7 @@ DeepSeek 网页会自动出现题目。成功响应示例：
 3. **Chrome 或 Edge、Tampermonkey、DeepSeek 账号**：浏览器中安装 Tampermonkey 扩展，并在这个浏览器里登录 [DeepSeek 网页](https://chat.deepseek.com/)。
 4. **OCS 主脚本**：先按 [OCS 官方项目说明](https://github.com/ocsjs/ocsjs)安装并确认 OCS 可正常打开。本仓库不包含 OCS 主脚本。
 
-网页桥接模式没有 npm 依赖，不需要运行 `npm install` 或 DeepSeek API Key。它需要访问 DeepSeek 网页，网页账号本身仍受 DeepSeek 的服务规则和使用限制约束。
+Windows 油猴模式没有 npm 依赖，不需要运行 `npm install` 或 DeepSeek API Key。它需要访问 DeepSeek 网页，网页账号本身仍受 DeepSeek 的服务规则和使用限制约束。Linux 无头模式需要安装下文的 Playwright 和 Chromium。
 
 ### 第二步：下载项目并设置本地口令
 
@@ -155,7 +165,7 @@ Copy-Item .env.example .env
 notepad .env
 ```
 
-把 `API_TOKEN=` 后面的值设成你自己选的一段简单口令，例如：
+把 `API_TOKEN=` 后面的值设成你自己选的一段简单口令（什么你要商用，作者没想那么远，自己用用就好啦，谁想上网课啊），例如：
 
 ```dotenv
 API_TOKEN=OCS-1234
@@ -245,9 +255,128 @@ DeepSeek 页面会收到题目并生成回答。成功时 PowerShell 返回 `cod
 
 以后每次使用的顺序是：打开项目目录的 PowerShell 并运行 `node --env-file=.env server.mjs` → 在 DeepSeek 网页桥接面板点「启动」并确认连接 → 打开 OCS 开始答题。退出时可先在桥接面板点「暂停」，再按 `Ctrl+C` 关闭服务。
 
-## 可选：Linux 无桌面服务器使用 DeepSeek 官方 API（付费，不推荐）
+## Linux 无头浏览器：使用 DeepSeek 网页，不调用付费 API
 
-Linux 无桌面方案目前使用官方 API：不启动浏览器，也不安装油猴脚本，Node.js 服务直接调用 DeepSeek API。当前不提供自动化操作 DeepSeek 网页的无头浏览器方案；DeepSeek 用户协议限制使用机器人等自动方式抓取或复制网页服务内容，详见[用户协议](https://cdn.deepseek.com/policies/zh-CN/deepseek-terms-of-use.html)。**API 按 token 计费，会产生实际费用，因此优先推荐上面的默认网页桥接模式。** 当前价格以 [DeepSeek 官方定价页](https://api-docs.deepseek.com/quick_start/pricing/) 为准。本项目只是调用 API，不代购、不代充，也无法替你控制实际账单。
+运行结构是 `OCS → Node.js 服务 → Linux worker → 无头 Chromium 中的 DeepSeek 网页 → 答案回传 OCS`。无需在 Linux 安装油猴扩展，也不需要浏览器窗口一直显示；Chromium 进程仍在后台运行。它使用页面输入框、发送按钮和回答区域，没有逆向调用网页内部接口、没有反检测伪装或验证码绕过。请遵守网页服务的使用规则及限制。
+
+### 1. 安装依赖
+
+在 Linux 安装 Node.js 22+、npm 和 Git。建议使用 Playwright 官方支持的 Ubuntu/Debian 系统，完整支持范围以 [Playwright 文档](https://playwright.dev/docs/browsers)为准。用普通用户运行项目，不要以 root 身份启动浏览器；安装系统依赖时才需要 sudo。
+
+```bash
+git clone https://github.com/XuanHanHan/ocs-free-question-bank.git
+cd ocs-free-question-bank
+node --version
+npm ci
+npx playwright install --with-deps chromium
+cp .env.example .env
+chmod 600 .env
+```
+
+已有 `.env` 时跳过复制命令，避免覆盖旧口令。编辑 `.env`，至少保留以下内容：
+
+```dotenv
+BACKEND=web-bridge
+API_TOKEN=你自己设置的简单口令
+PORT=3000
+JOB_TIMEOUT_SECONDS=150
+DEEPSEEK_API_KEY=
+```
+
+`API_TOKEN` 与 OCS 配置保持一致即可，不是 DeepSeek 密钥。Linux 网页 worker 不使用 `DEEPSEEK_API_KEY`；不要把 `BACKEND` 设置成 `deepseek-api`。
+
+### 2. 首次人工登录（会话失效后需重新登录）
+
+登录会话保存在项目的 `.deepseek-profile/` 专用目录，已加入 `.gitignore`。同一个 Linux 用户、同一个目录用于登录和后续无头运行。不要上传、共享这个目录，也不要直接复制 Windows Chrome 的个人配置目录到 Linux：会话可能依赖平台和用户，不能保证可迁移。
+
+如果 Linux 有桌面或已连接远程桌面，在项目目录运行：
+
+```bash
+npm run linux:login
+```
+
+它会打开一个专用 Chromium 窗口。请人工登录自己的 DeepSeek 账号、完成验证，关闭深度思考/联网搜索，并新建空白对话。完成后回到终端按 Enter，程序会检查页面并关闭浏览器，登录状态保存在专用目录中。
+
+**如果服务器完全没有桌面**，需要临时用虚拟显示和 VNC 完成人工登录。只有这一步需要查看窗口，日常无头运行不需要 Xvfb/VNC。以下为 Ubuntu/Debian 示例：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y xvfb x11vnc
+```
+
+在服务器的终端 A 启动虚拟显示，并保持运行：
+
+```bash
+Xvfb :99 -screen 0 1280x900x24 -nolisten tcp
+```
+
+在服务器的终端 B 进入项目目录，设置 VNC 密码（按提示输入），然后启动只监听本机的 VNC：
+
+```bash
+mkdir -p .local-test
+chmod 700 .local-test
+x11vnc -storepasswd .local-test/vnc.pass
+chmod 600 .local-test/vnc.pass
+x11vnc -display :99 -localhost -rfbauth .local-test/vnc.pass -rfbport 5900 -forever -shared
+```
+
+在你自己的电脑打开一个终端，通过 SSH 转发 VNC 端口：
+
+```bash
+ssh -N -L 5900:127.0.0.1:5900 用户名@Linux服务器地址
+```
+
+保持 SSH 窗口运行，用本地 VNC 客户端连接 `127.0.0.1:5900`，输入刚设置的 VNC 密码。在服务器的终端 C 进入项目目录并运行：
+
+```bash
+DISPLAY=:99 npm run linux:login
+```
+
+在 VNC 里操作 Chromium 完成登录和验证，再到终端 C 按 Enter 保存会话。结束后分别在终端 A、B 和本地 VNC 隧道窗口按 `Ctrl+C`，关闭虚拟显示、VNC 和转发。无需将 5900 或 3000 端口开放到公网。
+
+### 3. 启动本地服务和无头 worker
+
+终端一（服务）进入项目目录：
+
+```bash
+node --env-file=.env server.mjs
+```
+
+终端二（worker）进入同一目录：
+
+```bash
+npm run linux:start
+```
+
+看到「Linux 网页桥接已连接，等待 OCS 题目」后，再执行：
+
+```bash
+curl http://127.0.0.1:3000/health
+```
+
+预期 `mode` 为 `web-bridge`、`connected` 为 `true`。两个终端都要保持运行。停止 worker 可按 `Ctrl+C`，它会取消自身桥接并关闭 Chromium；之后再停止服务。请勿同时用同一浏览器目录运行 `linux:login` 和 `linux:start`。
+
+### 4. 在运行 OCS 的电脑上连接 Linux 服务
+
+如果 OCS 与服务运行在同一台电脑，沿用 `ocs-config.json`。如果 OCS 在 Windows、服务在 Linux 服务器，在 Windows 终端建立 SSH 隧道：
+
+```bash
+ssh -N -L 3000:127.0.0.1:3000 用户名@Linux服务器地址
+```
+
+保持隧道运行。OCS 的 `homepage` 和 `url` 仍分别填 `http://127.0.0.1:3000/health` 和 `http://127.0.0.1:3000/search`，认证头填 `Bearer ` 加 **Linux 服务里的 API_TOKEN**。这里的 Windows 3000 端口需空闲，先停止 Windows 上旧的本地服务；也可改为本地转发 3001 端口，并同步修改 OCS 两个地址。OCS 线程设为 1，最大耗时建议 180 秒，先实际搜一道题验证。
+
+### 5. 故障处理与限制
+
+- 登录过期、网页验证、草稿、控件改版、任务超时或桥接心跳错误会使 worker 停止，不会自动重复发送题目。重新运行 `linux:login` 检查网页，清空草稿、等待生成完成后再启动 worker。
+- 出错截图保存在 `.local-test/linux-worker-error.png`，可能包含账号或题目，请勿直接公开；该目录也已忽略提交。截图无法生成时以终端错误为准。
+- 默认会话目录是 `.deepseek-profile/`，可用环境变量 `DEEPSEEK_PROFILE_DIR` 指定其他专用目录。自定义目录请放在仓库之外并保护其访问权限。
+- Chromium 沙箱保持开启；若系统不允许沙箱运行，请按系统和 Playwright 的部署要求处理，不要通过禁用沙箱或 root 运行规避。
+- 这是新增模式，模拟网页的浏览器联调已测试；真实 DeepSeek 账号在 Linux 上的登录、验证码和答题仍需使用者实测，网页改版可能需要更新选择器。
+
+## 可选：DeepSeek 官方 API 后端（付费，不推荐）
+
+官方 API 模式不启动浏览器，也不安装油猴脚本，Node.js 服务直接调用 DeepSeek API，Windows/Linux 均可使用。**API 按 token 计费，会产生实际费用，因此不推荐作为默认方案。** 当前价格以 [DeepSeek 官方定价页](https://api-docs.deepseek.com/quick_start/pricing/) 为准。本项目只是调用 API，不代购、不代充，也无法替你控制实际账单。
 
 在 Linux 服务器安装 Node.js 22+，下载项目并编辑 `.env`。配置如下：
 
@@ -319,6 +448,8 @@ node --test bridge.test.mjs web-server.test.mjs
 ```
 
 本地测试覆盖：HTTP 鉴权与校验、队列串行、独占标签页、任务编号匹配、过期结果、暂停/掉线/取消、JSON 提取、等待生成结束、避免覆盖草稿和重复发送。
+
+新增 Linux 模式可执行 `npm ci`、`npx playwright install --with-deps chromium`，再运行 `npm run test:all`。已在 Ubuntu 22.04 的真实无头 Chromium 上通过全部 20 项测试，包括模拟网页上的连续两题、独立心跳、未登录/草稿检查、worker 独占和调用方取消。测试没有使用真实 DeepSeek 账号，不能替代登录后的实际搜题验证。GitHub Actions 也会运行这套测试。
 
 实际登录网页已验证输入控件、发送控件和专用回答区域，并将真实生成的 `2#3` 答案回传到本地 `/search`。该次联调由浏览器工具代替油猴脚本执行网页操作；**尚未在你安装油猴的浏览器中验证脚本自动执行全流程**。
 
