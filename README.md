@@ -4,7 +4,7 @@
 
 > **配置提醒：** OCS 配置中的认证头必须写成 `Bearer 你的口令`，其中 `Bearer` 和口令之间有一个空格。请保留这个空格，并将示例口令替换为你自己的 `API_TOKEN`。
 
-本项目由 AI 辅助编写，仍需要真实使用者测试和反馈。由于我之后未必还有网课任务，项目不一定会持续更新。欢迎目前有网课任务的同学参与测试，也欢迎有兴趣的开发者接手改进或继续开发；可以通过 GitHub Issues 或 Pull Requests 联系和贡献。
+本项目由 AI 辅助编写，仍需要真实使用者测试和反馈。由于我之后未必还有网课任务，项目不一定会持续更新。欢迎目前有网课任务的同学参与测试，也欢迎有兴趣的开发者接手改进或继续开发；可以通过 GitHub Issues、Pull Requests 或 QQ 1315528099 联系和贡献。
 
 兼容 OCS 4.15.3 和 5.1.0 的 `/search` 题库接口；网页端操作由单独的油猴桥接脚本完成。
 
@@ -20,6 +20,12 @@ OCS 题目 → 本机 Node.js 队列 → DeepSeek 网页桥接油猴脚本
 截图用于展示桥接面板的位置和配置项。截图时面板显示“桥接已暂停或由其他页面持有”，因此不是成功连接的证明；正常运行时应显示“已连接，等待 OCS 题目”，且 `/health` 返回 `connected: true`。
 
 服务无第三方依赖，需要 Node.js 22+。网页操作通过普通页面控件完成，没有调用网页内部接口，也不读取账号密码或 Cookie。DeepSeek 网页服务的限制仍然适用。
+
+## 网页答题示例
+
+下面截图展示 DeepSeek 网页收到题目后，按提示返回带有 `answers` 和 `explanation` 的 JSON。它用于说明网页侧的答题格式；完整流程还需要本地服务、油猴桥接脚本和 OCS 题库配置都已启动并连接。DeepSeek 生成答案可能有误，请自行核对。
+
+![DeepSeek 网页解题返回结构化答案示例](docs/images/deepseek-answer-demo.png)
 
 ## 1. 获取项目并启动本地服务
 
@@ -110,19 +116,106 @@ DeepSeek 网页会自动出现题目。成功响应示例：
 
 `options` 支持字符串数组或换行分隔字符串；`type` 支持 single、multiple、judgement、completion、unknown。题目和选项会发送到你的 DeepSeek 网页对话并留在聊天记录中。
 
-## 完整演示：从桥接连接到 OCS 搜题
+## 保姆级演示：从安装到 OCS 实际搜题
 
-下面以本机运行服务为例。先在 DeepSeek 网页桥接面板点击「启动」，然后在 PowerShell 检查网页桥接心跳：
+以下步骤以 Windows、Chrome/Edge、PowerShell 和本机默认地址 `127.0.0.1:3000` 为例。服务、DeepSeek 浏览器和 OCS 必须运行在同一台电脑上。第一次配置请按顺序完成；之后使用时只需启动服务、启动网页桥接，再打开 OCS。
+
+### 第一步：准备依赖和账号
+
+需要准备：
+
+1. **Node.js 22 或更高版本**：运行本地题库服务。可从 [Node.js 官网](https://nodejs.org/) 安装 LTS 版本，安装后重新打开 PowerShell。
+2. **Git**：下载本项目。安装后在 PowerShell 输入 `git --version` 确认可用；也可以从 GitHub 下载 ZIP 并解压，跳过 Git 命令。
+3. **Chrome 或 Edge、Tampermonkey、DeepSeek 账号**：浏览器中安装 Tampermonkey 扩展，并在这个浏览器里登录 [DeepSeek 网页](https://chat.deepseek.com/)。
+4. **OCS 主脚本**：先按 [OCS 官方项目说明](https://github.com/ocsjs/ocsjs)安装并确认 OCS 可正常打开。本仓库不包含 OCS 主脚本。
+
+本项目没有 npm 依赖，不需要运行 `npm install`，也不需要 DeepSeek API Key。需要访问 DeepSeek 网页，网页账号本身仍受 DeepSeek 的服务规则和使用限制约束。
+
+### 第二步：下载项目并设置本地口令
+
+打开 PowerShell，逐行执行：
+
+```powershell
+git clone https://github.com/XuanHanHan/ocs-free-question-bank.git
+cd ocs-free-question-bank
+node --version
+Copy-Item .env.example .env
+```
+
+`node --version` 应显示 `v22` 或更高版本。如果你已经有 `.env`，不要再执行覆盖它的复制命令。接着生成一条自己的随机口令：
+
+```powershell
+node -e "console.log(require('node:crypto').randomBytes(24).toString('hex'))"
+```
+
+复制输出的随机字符串，然后打开配置文件：
+
+```powershell
+notepad .env
+```
+
+将 `API_TOKEN=请替换为随机口令` 改成 `API_TOKEN=` 后接刚才生成的值，例如：
+
+```dotenv
+API_TOKEN=在这里粘贴你生成的随机字符串
+PORT=3000
+JOB_TIMEOUT_SECONDS=150
+```
+
+保存并关闭记事本。口令只在你自己的电脑上使用；不要把真实口令贴到公开截图、Issue 或仓库文件里。
+
+### 第三步：启动本地服务
+
+在项目目录的 PowerShell 窗口运行：
+
+```powershell
+node --env-file=.env server.mjs
+```
+
+保持这个窗口打开。它就是本地题库服务；关掉窗口或按 `Ctrl+C` 会停止服务。不要为本机使用而在 Windows 防火墙中开放 3000 端口，本机浏览器通过 `127.0.0.1` 访问即可。
+
+### 第四步：安装并连接 DeepSeek 网页桥接脚本
+
+1. 在 Chrome/Edge 地址栏打开 Tampermonkey 扩展，进入「管理面板」，点击「添加新脚本」。
+2. 用记事本或 VS Code 打开项目里的 `deepseek-bridge.user.js`，复制全部内容，替换油猴编辑器里的默认内容，然后保存（通常是 `Ctrl+S`）。这是配套的第二个油猴脚本，原来的 OCS 主脚本要保留。
+3. 在**同一个装有 Tampermonkey 的浏览器**打开或刷新 [DeepSeek](https://chat.deepseek.com/)，确认已登录，并打开一个专门用于 OCS 的空白对话。
+4. 在 DeepSeek 页面右下角找到「OCS · DeepSeek 网页桥接」面板。服务地址填 `http://127.0.0.1:3000`；API_TOKEN 填 `.env` 里的同一串口令。点击「启动」。
+5. 面板应显示已连接、等待 OCS 题目。若浏览器提示油猴脚本访问本机地址，选择允许。Codex 内置浏览器的登录状态与 Chrome/Edge 分开；请在实际安装了油猴的浏览器中登录和运行。
+
+验证桥接是否在线：另开一个 PowerShell 窗口（不要关服务窗口），执行：
 
 ```powershell
 Invoke-RestMethod -Uri 'http://127.0.0.1:3000/health'
 ```
 
-预期看到 `status: ok`、`mode: web-bridge` 和 `connected: True`。如果 `connected` 为 `False`，先检查 DeepSeek 页面是否已登录、油猴桥接面板是否已启动，以及面板中的服务地址和 API_TOKEN 是否与本机 `.env` 一致。
+应看到 `status: ok`、`mode: web-bridge` 和 `connected: True`。如果显示 `False`，先确认服务窗口仍在运行、DeepSeek 已登录、油猴面板已启动，并且服务地址和口令完全一致。`connected: True` 代表桥接在线，不代表模型已经答完题。
 
-再运行上面的「手动测试」命令。预期响应中 `code` 为 `0`，答案示例为 `2#3`。这一步验证本地 `/search` 服务和网页桥接能够完成一题。
+### 第五步：先手动测一道题
 
-最后，OCS 题库配置必须指向运行 Node.js 服务的同一台电脑。默认本机配置如下：
+保持服务和 DeepSeek 桥接都运行，在另一个 PowerShell 窗口执行下面命令。把 `你的实际口令` 替换成 `.env` 中 `API_TOKEN` 后面的值；`Bearer` 后必须有一个空格：
+
+```powershell
+$body = @{
+  question = '哪些是质数？'
+  options = @('2', '3', '4')
+  type = 'multiple'
+} | ConvertTo-Json
+Invoke-RestMethod -Uri 'http://127.0.0.1:3000/search' `
+  -Method Post -ContentType 'application/json; charset=utf-8' `
+  -Headers @{ Authorization = 'Bearer 你的实际口令' } -Body $body
+```
+
+DeepSeek 页面会收到题目并生成回答。成功时 PowerShell 返回 `code: 0`，答案通常类似 `2#3`。如果此处失败，先不要配置 OCS，按后面的故障说明修复本地服务或网页桥接。
+
+### 第六步：把题库配置粘贴到 OCS
+
+1. 在 OCS 设置中找到「通用 → 全局设置 → 题库配置」（不同 OCS 版本的菜单文字可能略有差异）。
+2. 打开项目里的 `ocs-config.json`，复制**整个 JSON 数组**，粘贴到 OCS 题库配置框。配置里的 `homepage` 和 `url` 默认是本机地址；在本机使用时保持不变。
+3. 在配置的 `Authorization` 一行，将示例值替换为自己的口令。格式必须是 `Bearer ` 加口令，`Bearer` 和口令之间有且只有一个空格，例如 `Bearer abc123`。不要删除 `Bearer`，也不要把尖括号或引号当作口令的一部分。
+4. 选择默认解析器并保存。将搜题并发/线程数设为 **1**，高级设置中的搜题最大耗时建议设为 **180 秒**。
+5. 在 OCS 里用一题进行实际搜题，确认题目能出现在 DeepSeek 页面且 OCS 收到答案。DeepSeek 网页可能要求验证或限制请求；遇到这种情况先在网页处理，再重新启动桥接。
+
+下面是 `ocs-config.json` 的结构示例。实际粘贴时直接使用仓库文件，再替换认证口令：
 
 ```json
 [
@@ -147,7 +240,9 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:3000/health'
 ]
 ```
 
-把 `Bearer ` 后面的示例文字替换为 `.env` 中的同一口令，保留 `Bearer` 后面的一个空格。将配置保存到 OCS 后，再在 OCS 里实际发起一题验证；「题库连接成功」只表示 OCS 的连通性探测收到响应，不代表网页桥接已连接或题目一定能答完。
+把 `Bearer ` 后面的示例文字替换为 `.env` 中的同一口令，保留 `Bearer` 后面的一个空格。「题库连接成功」只表示 OCS 的连通性探测收到响应，不代表网页桥接已连接或题目一定能答完；请用真实题目完成最后验证。
+
+以后每次使用的顺序是：打开项目目录的 PowerShell 并运行 `node --env-file=.env server.mjs` → 在 DeepSeek 网页桥接面板点「启动」并确认连接 → 打开 OCS 开始答题。退出时可先在桥接面板点「暂停」，再按 `Ctrl+C` 关闭服务。
 
 ### 本地接口成功，但 OCS 显示连接失败
 
