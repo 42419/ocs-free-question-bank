@@ -13,6 +13,12 @@ OCS 题目 → 本机 Node.js 队列 → DeepSeek 网页桥接油猴脚本
          ← OCS 格式答案    ← 网页生成的回答
 ```
 
+## 运行界面
+
+![DeepSeek 网页中的 OCS 网页桥接面板](docs/images/deepseek-bridge-panel.png)
+
+截图用于展示桥接面板的位置和配置项。截图时面板显示“桥接已暂停或由其他页面持有”，因此不是成功连接的证明；正常运行时应显示“已连接，等待 OCS 题目”，且 `/health` 返回 `connected: true`。
+
 服务无第三方依赖，需要 Node.js 22+。网页操作通过普通页面控件完成，没有调用网页内部接口，也不读取账号密码或 Cookie。DeepSeek 网页服务的限制仍然适用。
 
 ## 1. 获取项目并启动本地服务
