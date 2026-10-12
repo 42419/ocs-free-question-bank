@@ -2,7 +2,9 @@
 
 为 OCS 提供免费的网页搜题题库：通过本地 Node.js 桥接，把题目发送到你已登录的 DeepSeek 网页，再按 OCS 题库接口返回答案。无需 DeepSeek API Key。它不是预置静态题库，答案由 DeepSeek 根据题目生成。
 
-> **部署方式：每位使用者都要在自己的电脑部署并运行这套服务。** 本项目的 GitHub 仓库只分发源代码和配置示例，不提供公共搜题后端，也不需要把 OCS 指向作者的服务器。你自己的 OCS、Node.js 服务和已登录 DeepSeek 的浏览器在同一台电脑上协作；默认地址是 `http://127.0.0.1:3000`，题目由你的本地桥接发送到你自己的 DeepSeek 网页。
+> **部署方式：每位使用者都要在自己的电脑部署并运行这套服务。** 我不提供或代运行公共后端，也不需要把 OCS 指向我的服务器；GitHub 仓库只提供代码和配置示例。自己的 OCS、Node.js 服务和已登录 DeepSeek 的浏览器在同一台电脑上协作，默认地址是 `http://127.0.0.1:3000`。
+
+> **费用说明：** 本项目不收费，也不需要购买 DeepSeek API。使用本地服务和 DeepSeek 网页版搜题无需向项目作者付费，希望能帮大家省下一些搜题费用。请注意，DeepSeek 网页的可用性、账号要求和使用限制由 DeepSeek 决定；本项目不保证第三方服务永久免费或始终可用。
 
 > **配置提醒：** OCS 配置中的认证头必须写成 `Bearer 你的口令`，其中 `Bearer` 和口令之间有一个空格。请保留这个空格，并将示例口令替换为你自己的 `API_TOKEN`。
 
@@ -42,13 +44,13 @@ if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 
 确认 `node --version` 输出为 `v22` 或更高版本。条件复制只会在首次运行时创建 `.env`，不会覆盖已有口令。
 
-设置一个随机访问口令作为 API_TOKEN，可以用以下命令生成：
+`API_TOKEN` 是你自己设置的本地连接口令，不是 DeepSeek API Key。只在自己电脑上使用时，设成一段自己容易辨认的简单文字即可，例如 `OCS-1234`；不需要很复杂。记住这段文字，后面要在油猴面板和 OCS 配置中填入完全相同的值。若你希望使用更难猜的口令，也可以用下面命令随机生成：
 
 ```powershell
 node -e "console.log(require('node:crypto').randomBytes(24).toString('hex'))"
 ```
 
-复制命令输出的口令，然后打开 `.env`：
+选择简单口令（例如 `OCS-1234`），或者复制随机命令的输出，然后打开 `.env`：
 
 ```powershell
 notepad .env
@@ -57,7 +59,7 @@ notepad .env
 `.env` 内容：
 
 ```dotenv
-API_TOKEN=粘贴刚生成的随机访问口令
+API_TOKEN=OCS-1234
 PORT=3000
 JOB_TIMEOUT_SECONDS=150
 ```
@@ -144,27 +146,21 @@ node --version
 Copy-Item .env.example .env
 ```
 
-`node --version` 应显示 `v22` 或更高版本。如果你已经有 `.env`，不要再执行覆盖它的复制命令。接着生成一条自己的随机口令：
-
-```powershell
-node -e "console.log(require('node:crypto').randomBytes(24).toString('hex'))"
-```
-
-复制输出的随机字符串，然后打开配置文件：
+`node --version` 应显示 `v22` 或更高版本。如果你已经有 `.env`，不要再执行覆盖它的复制命令。打开配置文件：
 
 ```powershell
 notepad .env
 ```
 
-将 `API_TOKEN=请替换为随机口令` 改成 `API_TOKEN=` 后接刚才生成的值，例如：
+把 `API_TOKEN=` 后面的值设成你自己选的一段简单口令，例如：
 
 ```dotenv
-API_TOKEN=在这里粘贴你生成的随机字符串
+API_TOKEN=OCS-1234
 PORT=3000
 JOB_TIMEOUT_SECONDS=150
 ```
 
-保存并关闭记事本。口令只在你自己的电脑上使用；不要把真实口令贴到公开截图、Issue 或仓库文件里。
+保存并关闭记事本。稍后把这个值原样填入油猴桥接面板和 OCS 配置。不要把自己的口令提交到公开仓库或贴到公开截图里。
 
 ### 第三步：启动本地服务
 
