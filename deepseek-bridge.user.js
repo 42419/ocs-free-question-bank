@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OCS DeepSeek 网页桥接
 // @namespace    local.ocs.deepseek.bridge
-// @version      1.0.0
+// @version      1.5.0
 // @description  在已登录的 DeepSeek 网页处理本机 OCS 题目，无需 DeepSeek API 密钥
 // @match        https://chat.deepseek.com/*
 // @grant        GM_xmlhttpRequest
@@ -21,14 +21,34 @@
     send: '[role="button"].ds-button--primary.ds-button--circle',
     answer: '.ds-assistant-message-main-content'
   };
+  /** 从任意文本里切出顶层的 {...} 片段，容忍 JSON 前后的说明文字和代码围栏 */
+  function jsonObjects(text) {
+    const found = [];
+    let depth = 0, start = -1, quoted = false, escaped = false;
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (char === '\\') escaped = true;
+        else if (char === '"') quoted = false;
+      } else if (char === '"') quoted = true;
+      else if (char === '{') { if (depth === 0) start = i; depth++; }
+      else if (char === '}' && depth > 0) {
+        depth--;
+        if (depth === 0 && start >= 0) { found.push(text.slice(start, i + 1)); start = -1; }
+      }
+    }
+    return found;
+  }
   function parseReply(text, id) {
-    const raw = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
-    try {
-      const value = JSON.parse(raw);
-      if (!value || value.bridge_id !== id || !Array.isArray(value.answers) ||
-          value.answers.some(s => typeof s !== 'string' || !s.trim()) || typeof value.explanation !== 'string') return null;
-      return value;
-    } catch { return null; }
+    const candidates = [text.trim(), ...jsonObjects(text)];
+    for (const candidate of candidates) {
+      let value;
+      try { value = JSON.parse(candidate); } catch { continue; }
+      if (value && value.bridge_id === id && Array.isArray(value.answers) &&
+          value.answers.every(s => typeof s === 'string' && s.trim()) && typeof value.explanation === 'string') return value;
+    }
+    return null;
   }
   async function runJob(job, ui, { now = Date.now, sleep = ms => new Promise(r => setTimeout(r, ms)), running = () => true } = {}) {
     const check = () => {
@@ -38,7 +58,13 @@
     };
     check();
     if (ui.draft().trim()) throw new Error('输入框有草稿，请清空后重新启动桥接');
-    if (!ui.isIdle()) throw new Error('网页仍在生成或发送按钮结构已变化，请检查后重试');
+    // 上一题可能还在收尾：先等页面空闲再发，避免把新题塞进正在生成的对话
+    const idleDeadline = Math.min(job.deadline, now() + 60000);
+    while (!ui.isIdle()) {
+      check();
+      if (now() >= idleDeadline) throw new Error('网页仍在生成，等待 60 秒后放弃，请检查网页再重新启动');
+      await sleep(150);
+    }
     ui.fill(job.prompt);
     const sendDeadline = Math.min(job.deadline, now() + 3000);
     while (!ui.canSend()) {
@@ -55,16 +81,17 @@
       await sleep(100);
     }
     const conversationUrl = ui.url();
-    let stable = '', stableSince = 0;
+    let stableText = '', stableSince = 0;
     while (true) {
       check();
       if (ui.url() !== conversationUrl) throw new Error('对话页面已切换，桥接暂停以避免串题');
-      const result = ui.replies().map(text => parseReply(text, job.id)).find(value => value !== null);
-      if (result && ui.isIdle()) {
-        const current = JSON.stringify(result);
-        if (current !== stable) { stable = current; stableSince = now(); }
-        else if (now() - stableSince >= 300) return result;
-      } else { stable = ''; }
+      // 只看回复正文是否稳定：网页的“生成中”状态可能比答案晚结束很多（实测 93 秒 vs 3 秒），
+      // 不能拿它当回传条件，否则 OCS 会一直转圈。
+      const match = ui.replies().map(text => ({ text, value: parseReply(text, job.id) })).find(item => item.value !== null);
+      if (match) {
+        if (match.text !== stableText) { stableText = match.text; stableSince = now(); }
+        else if (now() - stableSince >= 600) return match.value;
+      } else { stableText = ''; }
       await sleep(150);
     }
   }
@@ -111,6 +138,7 @@
   }
 
   const clientId = crypto.randomUUID();
+  const VERSION = '1.5.0';
   const ui = createDomAdapter(document);
   let active = false, loop = null, heartbeat = null, heartbeatBusy = false, registered = false, stopping = null, epoch = 0;
   let address = GM_getValue('address', 'http://127.0.0.1:3000');
@@ -120,7 +148,7 @@
   const root = host.attachShadow({ mode: 'closed' });
   root.innerHTML = `<style>
     :host{font:13px/1.5 system-ui;color:#142337}section{width:270px;background:#fff;border:1px solid #d4dce6;border-radius:12px;padding:14px;box-shadow:0 5px 24px #0002}strong{font-size:15px}label{display:block;margin-top:8px}input{box-sizing:border-box;width:100%;padding:6px;border:1px solid #b8c5d6;border-radius:5px}button{margin:10px 6px 0 0;padding:5px 12px;cursor:pointer}p{margin:10px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}small{color:#617187}button:disabled{cursor:default}
-    </style><section><strong>OCS · DeepSeek 网页桥接</strong>
+    </style><section><strong>OCS · DeepSeek 网页桥接 v1.5</strong>
     <label>本地服务地址<input id="address" spellcheck="false"></label>
     <label>API_TOKEN<input id="token" type="password" autocomplete="off"></label>
     <button id="start">启动</button><button id="pause" disabled>暂停</button>
@@ -132,11 +160,18 @@
   addressInput.value = address;
   tokenInput.value = token;
   const display = message => { status.textContent = message; };
-  function request(path, data = {}) {
+  // 优先用页面自己的 fetch 直连本机：油猴的 GM_xmlhttpRequest 要经扩展后台 service worker 转发，
+  // 实测会被 Chrome 按分钟级唤醒，导致题目排 60 秒才被领取。只有被页面 CSP 拦截时才退回油猴。
+  let transport = 'fetch';
+  function gmRequest(path, payload) {
+    if (transport !== 'gm') {
+      transport = 'gm';
+      console.log('[OCS bridge] fetch 直连被页面 CSP 或网络策略拦截，退回 GM_xmlhttpRequest（可能被扩展后台限流）');
+    }
     return new Promise((resolve, reject) => GM_xmlhttpRequest({
       method: 'POST', url: address + path, timeout: 8000,
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      data: JSON.stringify({ clientId, ...data }),
+      data: payload,
       onload: response => {
         let body;
         try { body = JSON.parse(response.responseText); } catch { reject(new Error('本地服务返回了无效数据')); return; }
@@ -146,6 +181,24 @@
       onerror: () => reject(new Error('无法连接本地服务，请确认已运行 node 服务并允许油猴访问本机')),
       ontimeout: () => reject(new Error('本地服务连接超时'))
     }));
+  }
+  async function request(path, data = {}) {
+    const payload = JSON.stringify({ clientId, version: VERSION, token, ...data });
+    let response;
+    try {
+      // 不带自定义头、body 用 text/plain：这是"简单请求"，浏览器不会先发 OPTIONS 预检
+      response = await fetch(address + path, {
+        method: 'POST', cache: 'no-store', signal: AbortSignal.timeout(8000),
+        headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+        body: payload
+      });
+    } catch {
+      // 没拿到任何 HTTP 响应才退回油猴；业务错误（401/503 等）不走这里
+      return gmRequest(path, payload);
+    }
+    const body = await response.json().catch(() => null);
+    if (response.status !== 200 || !body || body.code !== 0) throw new Error(body?.message || `本地服务错误 ${response.status}`);
+    return body;
   }
   async function stop(message) {
     active = false;
@@ -167,8 +220,25 @@
         const { job } = await request('/bridge/poll');
         if (!active) break;
         if (job) {
-          display('正在解题：' + job.input.question.slice(0,80));
-          const answer = await runJob(job, ui, { running: () => active });
+          const startedAt = Date.now();
+          // 每秒把“脚本看到的网页状态”打到控制台和面板，卡住时能一眼看出卡在哪一步
+          const probe = setInterval(() => {
+            if (!active) return;
+            try {
+              const replies = ui.replies();
+              const seconds = Math.round((Date.now() - startedAt) / 1000);
+              const parsed = replies.filter(text => parseReply(text, job.id)).length;
+              const longest = replies.reduce((max, text) => Math.max(max, text.length), 0);
+              const idle = ui.isIdle() ? '是' : '否';
+              console.log(`[OCS bridge] ${seconds}s 回复块=${replies.length} 可解析=${parsed} 空闲=${idle} 最长文本=${longest}`);
+              display(`解题中 ${seconds}s · 回复 ${replies.length} 块 · 可解析 ${parsed ? '是' : '否'} · 空闲 ${idle} · 字数 ${longest}`);
+            } catch (error) { console.log('[OCS bridge] 采样失败：' + error.message); }
+          }, 1000);
+          let answer;
+          try {
+            display('正在解题：' + job.input.question.slice(0,80));
+            answer = await runJob(job, ui, { running: () => active });
+          } finally { clearInterval(probe); }
           if (!active) break;
           await request('/bridge/result', { id: job.id, answer });
           display('本题已返回，等待下一题。');
@@ -193,10 +263,11 @@
         if (ui.draft().trim() || !ui.isIdle()) throw new Error('请清空草稿并等待当前回答完成，再启动');
         GM_setValue('address', address);
         GM_setValue('token', token);
-        await request('/bridge/connect');
+        await request('/bridge/connect', { version: VERSION });
+        console.log(`[OCS bridge] 已连接，传输方式：${transport}`);
         registered = active = true;
         pause.disabled = false;
-        display('已连接，等待 OCS 题目。');
+        display(`已连接，等待 OCS 题目。（${transport}）`);
         heartbeat = setInterval(async () => {
           if (heartbeatBusy || !active) return;
           heartbeatBusy = true;
@@ -214,4 +285,13 @@
     addressInput.disabled = tokenInput.disabled = false;
   });
   pause.addEventListener('click', () => { void stop('已暂停。若网页仍在生成，请等待完成或手动停止，再重新启动。'); });
+  // 标签页被隐藏时 Chrome 会限流甚至冻结页面，定时器停摆，题目会一直排在队列里等页面恢复
+  document.addEventListener('visibilitychange', () => {
+    const hidden = document.hidden;
+    console.log(`[OCS bridge] 页面${hidden ? '隐藏 → 浏览器将冻结/限流，题目会延迟' : '可见 → 恢复轮询'}`);
+    if (!active) return;
+    display(hidden
+      ? '⚠️ 页面已切到后台，Chrome 会冻结/限流本页面：OCS 的题目要等你切回来才开始处理。建议把 DeepSeek 单独放一个窗口。'
+      : '页面已回到前台，继续等待 OCS 题目。');
+  });
 })();

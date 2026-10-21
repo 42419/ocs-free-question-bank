@@ -9,7 +9,7 @@ before(async () => { browser = await chromium.launch({ headless: true, channel: 
 after(async () => { await browser?.close(); });
 
 async function fixture(t, { draft = '', generate = true } = {}) {
-  const server = createServer({ token: 'test-token', heartbeatTimeoutMs: 2000, monitorIntervalMs: 20 });
+  const server = createServer({ token: 'test-token', heartbeatTimeoutMs: 2000, monitorIntervalMs: 20, logger: () => {} });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = `http://127.0.0.1:${server.address().port}`;
   const page = await browser.newPage();
@@ -103,7 +103,7 @@ test('drafts and another registered browser stop the worker without sending or s
   assert.equal(await occupied.page.evaluate(() => window.sent), 0);
 });
 
-test('OCS cancellation while the page is generating stops the worker and never repeats a send', { timeout: 10000 }, async t => {
+test('OCS cancellation keeps the worker alive and never repeats a send', { timeout: 10000 }, async t => {
   const f = await fixture(t, { generate: false });
   const done = f.start();
   await until(async () => (await f.health()).connected);
@@ -113,7 +113,11 @@ test('OCS cancellation while the page is generating stops the worker and never r
   await until(async () => await f.page.evaluate(() => window.sent) === 1);
   request.abort();
   await rejected;
-  assert.match((await done).error.message, /暂停|其他页面/);
+  // 调用方取消只丢弃本题：worker 继续持有注册，题目也只发送一次
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal((await f.health()).connected, true);
   assert.equal(await f.page.evaluate(() => window.sent), 1);
+  f.controller.abort();
+  assert.equal((await done).error, null);
   assert.equal((await f.health()).connected, false);
 });

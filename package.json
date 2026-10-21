@@ -5,6 +5,7 @@
   "engines": { "node": ">=22" },
   "scripts": {
     "start": "node --env-file=.env server.mjs",
+    "ocs:config": "node --env-file=.env print-ocs-config.mjs",
     "linux:login": "node --env-file=.env linux-worker.mjs --login",
     "linux:start": "node --env-file=.env linux-worker.mjs",
     "test": "node --test bridge.test.mjs web-server.test.mjs",

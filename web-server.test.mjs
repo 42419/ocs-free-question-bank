@@ -20,7 +20,7 @@ test('OCS 4.15 and 5.1 unauthenticated HEAD probes return 200 without queuing a 
   assert.equal(search.status, 401);
 });
 async function fixture(t, settings = {}) {
-  const server = createServer({ token: 'test-token', ...settings });
+  const server = createServer({ token: 'test-token', logger: () => {}, ...settings });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections(); server.close(); });
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -46,6 +46,11 @@ test('no DeepSeek key needed; authentication and validation', async t => {
   assert.equal((await post('/search', question)).status, 503);
   assert.equal((await post('/bridge/connect', {})).status, 400);
   assert.equal((await post('/search', { ...question, question: 'x'.repeat(40000) })).status, 413);
+  // 页面 fetch 走“简单请求”：不给 Authorization 头，口令放 body.token
+  const plain = body => fetch(base + '/search', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(body) });
+  assert.equal((await plain({ ...question, token: 'test-token' })).status, 503);
+  assert.equal((await plain({ ...question, token: 'wrong' })).status, 401);
+  assert.equal((await plain(question)).status, 401);
 });
 test('browser returns answer through actual HTTP and OCS handler', async t => {
   const { post, call } = await fixture(t);
@@ -148,18 +153,69 @@ test('lost heartbeat cancels work', async t => {
   assert.equal((await waiting).status, 503);
   assert.equal((await call('/bridge/heartbeat')).code, 409);
 });
-test('OCS disconnection cancels active work', async t => {
+test('OCS disconnection discards the job without pausing the bridge', async t => {
   const { base, post, call } = await fixture(t);
   await call('/bridge/connect');
   const controller = new AbortController();
   const waiting = post('/search', question, 'test-token', controller.signal);
   const rejected = assert.rejects(waiting, { name: 'AbortError' });
-  await claim(call);
+  const job = await claim(call);
   controller.abort();
   await rejected;
-  for (let i = 0; i < 50; i++) {
-    if (!(await (await fetch(base + '/health')).json()).connected) return;
-    await tick();
-  }
-  assert.fail('Browser must pause after active request cancellation');
+  const health = await (await fetch(base + '/health')).json();
+  assert.equal(health.connected, true);
+  assert.equal(health.queued, 1);
+  assert.ok(health.lastSeenAgoMs >= 0, 'health 应暴露桥接最后一次联系距今的毫秒数');
+  // 迟到的结果被安静收下，桥接不会因此停止，下一题照常
+  assert.equal((await call('/bridge/result', { id: job.id, answer: answer(job.id) })).code, 0);
+  assert.equal((await (await fetch(base + '/health')).json()).queued, 0);
+  const next = post('/search', { ...question, question: '下一题' });
+  const second = await claim(call);
+  await call('/bridge/result', { id: second.id, answer: answer(second.id) });
+  assert.equal((await next).status, 200);
+});
+test('routes tolerate query strings so OCS cache-busting URLs keep working', async t => {
+  const { base } = await fixture(t);
+  const stamp = Date.now();
+  assert.equal((await fetch(`${base}/health?t=${stamp}`)).status, 200);
+  assert.equal((await fetch(`${base}/search?t=${stamp}`, { method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-token' },
+    body: JSON.stringify(question) })).status, 503);
+});
+test('OPTIONS preflight is answered so a fetch-type bank config still works', async t => {
+  const { base } = await fixture(t);
+  const response = await fetch(base + '/search', { method: 'OPTIONS', headers: {
+    Origin: 'https://chaoxing.com', 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'authorization,content-type' } });
+  assert.equal(response.status, 204);
+  assert.equal(response.headers.get('access-control-allow-origin'), '*');
+  assert.match(response.headers.get('access-control-allow-headers'), /Authorization/i);
+  assert.equal(response.headers.get('access-control-allow-private-network'), 'true');
+});
+test('ocs:config output keeps the real token and other headers', async () => {
+  const { applyToken } = await import('./print-ocs-config.mjs');
+  const [bank] = applyToken([{ name: 'x', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer 替换为你自己的随机口令' } }], ' OCS-1234 ');
+  assert.equal(bank.headers.Authorization, 'Bearer OCS-1234');
+  assert.equal(bank.headers['Content-Type'], 'application/json');
+  assert.throws(() => applyToken([], '   '), /API_TOKEN/);
+});
+test('each OCS request is logged with status and duration; health keeps the last error', async t => {
+  const lines = [];
+  const { base, post, call } = await fixture(t, { logger: line => lines.push(line) });
+  assert.equal((await post('/search', question, 'wrong')).status, 401);
+  assert.equal((await (await fetch(base + '/health')).json()).lastError.status, 401);
+  assert.equal((await post('/search', question)).status, 503);
+  const log = lines.join('\n');
+  assert.match(log, /POST \/search → 401 \d+ms · API_TOKEN 不正确/);
+  assert.match(log, /POST \/search → 503 \d+ms/);
+  const health = await (await fetch(base + '/health')).json();
+  assert.equal(health.lastError.status, 503);
+  assert.match(health.lastError.message, /启动桥接/);
+  // 领取题目时留一行，便于区分“排队中”和“网页在生成”
+  await call('/bridge/connect', { version: '9.9.9' });
+  const waiting = post('/search', question);
+  const job = await claim(call);
+  await call('/bridge/result', { id: job.id, answer: answer(job.id) });
+  assert.equal((await waiting).status, 200);
+  assert.match(lines.join('\n'), /POST \/bridge\/poll → 200 \d+ms · 领取题目（排队 \d+ms）/);
+  assert.match(lines.join('\n'), /POST \/bridge\/connect → 200 \d+ms · 桥接脚本 v9\.9\.9/);
 });
