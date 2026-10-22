@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OCS DeepSeek 网页桥接
 // @namespace    local.ocs.deepseek.bridge
-// @version      1.5.0
+// @version      1.6.0
 // @description  在已登录的 DeepSeek 网页处理本机 OCS 题目，无需 DeepSeek API 密钥
 // @match        https://chat.deepseek.com/*
 // @grant        GM_xmlhttpRequest
@@ -138,7 +138,7 @@
   }
 
   const clientId = crypto.randomUUID();
-  const VERSION = '1.5.0';
+  const VERSION = '1.6.0';
   const ui = createDomAdapter(document);
   let active = false, loop = null, heartbeat = null, heartbeatBusy = false, registered = false, stopping = null, epoch = 0;
   let address = GM_getValue('address', 'http://127.0.0.1:3000');
@@ -147,19 +147,105 @@
   host.style.cssText = 'position:fixed;right:16px;bottom:18px;z-index:2147483647';
   const root = host.attachShadow({ mode: 'closed' });
   root.innerHTML = `<style>
-    :host{font:13px/1.5 system-ui;color:#142337}section{width:270px;background:#fff;border:1px solid #d4dce6;border-radius:12px;padding:14px;box-shadow:0 5px 24px #0002}strong{font-size:15px}label{display:block;margin-top:8px}input{box-sizing:border-box;width:100%;padding:6px;border:1px solid #b8c5d6;border-radius:5px}button{margin:10px 6px 0 0;padding:5px 12px;cursor:pointer}p{margin:10px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}small{color:#617187}button:disabled{cursor:default}
-    </style><section><strong>OCS · DeepSeek 网页桥接 v1.5</strong>
-    <label>本地服务地址<input id="address" spellcheck="false"></label>
-    <label>API_TOKEN<input id="token" type="password" autocomplete="off"></label>
-    <button id="start">启动</button><button id="pause" disabled>暂停</button>
+    :host{--bg:#fff;--fg:#182230;--muted:#6b7b8c;--line:#e3e9f0;--field:#f7f9fc;--accent:#4d6bfe;--on-accent:#fff;--ok:#16a34a;--warn:#f59e0b;--err:#e5484d;--head:linear-gradient(180deg,#fbfcfe,#f2f5fa);font:12px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--fg);user-select:none;-webkit-user-select:none}
+    @media (prefers-color-scheme: dark){:host{--bg:#151a22;--fg:#e6edf5;--muted:#93a4b7;--line:#2a323d;--field:#1b222c;--accent:#5b7cff;--ok:#34d399;--warn:#fbbf24;--err:#f87171;--head:linear-gradient(180deg,#1a212b,#161c25)}}
+    section{width:206px;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px rgba(15,23,42,.14),0 1px 2px rgba(15,23,42,.08);overflow:hidden}
+    header{display:flex;align-items:center;gap:4px;padding:4px 5px 4px 9px;background:var(--head);border-bottom:1px solid var(--line);cursor:move;touch-action:none}
+    header strong{font-size:12px;font-weight:600}
+    .ver{color:var(--muted);font-size:10px}
+    #dot{width:6px;height:6px;border-radius:50%;background:#b3bfcc;margin-left:1px;flex:0 0 auto;transition:background .2s,box-shadow .2s}
+    #dot[data-tone=ok]{background:var(--ok);box-shadow:0 0 0 3px rgba(22,163,74,.12)}
+    #dot[data-tone=busy]{background:var(--warn);box-shadow:0 0 0 3px rgba(245,158,11,.16);animation:pulse 1.1s ease-in-out infinite}
+    #dot[data-tone=error]{background:var(--err);box-shadow:0 0 0 3px rgba(229,72,77,.14)}
+    @keyframes pulse{50%{opacity:.35}}
+    header button{border:0;background:transparent;color:var(--muted);width:18px;height:18px;padding:0;border-radius:5px;font-size:12px;line-height:1;cursor:pointer;transition:background .15s,color .15s}
+    header button:hover{background:rgba(125,140,160,.18);color:var(--fg)}
+    #cfg{margin-left:auto}
+    #body{padding:7px 9px 8px}
+    .row{display:flex;gap:6px}
+    .row button{flex:1;padding:4px 0;font-size:12px;border-radius:7px;border:1px solid transparent;cursor:pointer;transition:background .15s,filter .15s,transform .06s}
+    .row button:active:not(:disabled){transform:translateY(1px)}
+    #start{background:var(--accent);color:var(--on-accent);font-weight:600;box-shadow:0 1px 2px rgba(77,107,254,.35)}
+    #start:hover:not(:disabled){filter:brightness(1.07)}
+    #start:disabled{opacity:.45;box-shadow:none;cursor:default}
+    #pause{background:var(--field);color:var(--fg);border-color:var(--line)}
+    #pause:hover:not(:disabled){background:var(--line)}
+    #pause:disabled{opacity:.5;cursor:default}
+    p{margin:7px 0 0;font-size:11px;line-height:1.4;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere;max-height:2.8em;overflow:auto}
+    p[data-tone=ok]{color:var(--fg);opacity:.72}
+    p[data-tone=busy]{color:var(--warn)}
+    p[data-tone=error]{color:var(--err)}
+    p::-webkit-scrollbar{width:4px}
+    p::-webkit-scrollbar-thumb{background:var(--line);border-radius:2px}
+    #settings{margin-top:1px}
+    #settings[hidden]{display:none}
+    label{display:block;margin-top:6px;font-size:10px;color:var(--muted)}
+    input{box-sizing:border-box;width:100%;padding:3px 6px;margin-top:2px;border:1px solid var(--line);border-radius:6px;background:var(--field);color:var(--fg);font-size:11px;user-select:text;-webkit-user-select:text;transition:border-color .15s,box-shadow .15s}
+    input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px rgba(77,107,254,.18)}
+    section.collapsed{width:auto;border-radius:999px}
+    section.collapsed #body,section.collapsed #cfg{display:none}
+    section.collapsed .ver{display:none}
+    section.collapsed header{border-bottom:0;padding:3px 4px 3px 10px}
+    </style><section id="panel"><header id="bar" title="拖动可移动"><strong>OCS 桥接</strong><span class="ver">v1.6</span><span id="dot" data-tone="idle"></span><button id="cfg" title="服务地址与口令">⚙</button><button id="fold" title="收起">−</button></header>
+    <div id="body">
+    <div class="row"><button id="start" title="开始领取 OCS 题目">启动</button><button id="pause" disabled title="停止领取任务并取消队列">暂停</button></div>
     <p id="status">请登录并打开一个专用空白对话，然后启动。</p>
-    <small>一次一题；运行时请勿手动发送或切换对话。</small></section>`;
+    <div id="settings"><label>服务地址<input id="address" spellcheck="false"></label><label>API_TOKEN<input id="token" type="password" autocomplete="off"></label></div>
+    </div></section>`;
   document.body.appendChild(host);
   const addressInput = root.querySelector('#address'), tokenInput = root.querySelector('#token');
   const start = root.querySelector('#start'), pause = root.querySelector('#pause'), status = root.querySelector('#status');
+  const panel = root.querySelector('#panel'), bar = root.querySelector('#bar'), fold = root.querySelector('#fold'), dot = root.querySelector('#dot');
+  const settings = root.querySelector('#settings'), cfg = root.querySelector('#cfg');
   addressInput.value = address;
   tokenInput.value = token;
-  const display = message => { status.textContent = message; };
+  // 已经存过口令时把设置收起来，只留按钮和状态；点 ⚙ 再展开
+  settings.hidden = !!token;
+  cfg.addEventListener('click', () => { settings.hidden = !settings.hidden; });
+  const display = (message, tone = 'idle') => { status.textContent = message; status.dataset.tone = tone; dot.dataset.tone = tone; };
+  // 位置与折叠状态都记在油猴自己的存储里，下次打开保持一致
+  const clamp = (x, y) => {
+    const width = host.offsetWidth || 270, height = host.offsetHeight || 180;
+    return { x: Math.round(Math.min(Math.max(0, x), Math.max(0, innerWidth - width))),
+      y: Math.round(Math.min(Math.max(0, y), Math.max(0, innerHeight - height))) };
+  };
+  const place = (x, y) => {
+    const point = clamp(x, y);
+    host.style.left = point.x + 'px';
+    host.style.top = point.y + 'px';
+    host.style.right = host.style.bottom = 'auto';
+    return point;
+  };
+  let position = null;
+  const saved = GM_getValue('panelPos', null);
+  if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) position = place(saved.x, saved.y);
+  let collapsed = GM_getValue('panelCollapsed', false) === true;
+  const applyCollapse = value => {
+    collapsed = value;
+    panel.classList.toggle('collapsed', value);
+    fold.textContent = value ? '+' : '−';
+    fold.title = value ? '展开' : '收起';
+    if (position) position = place(position.x, position.y);
+  };
+  applyCollapse(collapsed);
+  fold.addEventListener('click', () => { applyCollapse(!collapsed); GM_setValue('panelCollapsed', collapsed); });
+  addEventListener('resize', () => { if (position) { position = place(position.x, position.y); GM_setValue('panelPos', position); } });
+  // 拖动只从标题栏发起，避免和输入框选词冲突
+  bar.addEventListener('pointerdown', event => {
+    if (event.target.closest('button')) return;
+    const rect = host.getBoundingClientRect();
+    const offsetX = event.clientX - rect.left, offsetY = event.clientY - rect.top;
+    let moved = false;
+    const move = e => { moved = true; position = place(e.clientX - offsetX, e.clientY - offsetY); };
+    const up = () => {
+      removeEventListener('pointermove', move);
+      removeEventListener('pointerup', up);
+      if (moved && position) GM_setValue('panelPos', position);
+    };
+    addEventListener('pointermove', move);
+    addEventListener('pointerup', up);
+    event.preventDefault();
+  });
   // 优先用页面自己的 fetch 直连本机：油猴的 GM_xmlhttpRequest 要经扩展后台 service worker 转发，
   // 实测会被 Chrome 按分钟级唤醒，导致题目排 60 秒才被领取。只有被页面 CSP 拦截时才退回油猴。
   let transport = 'fetch';
@@ -200,12 +286,12 @@
     if (response.status !== 200 || !body || body.code !== 0) throw new Error(body?.message || `本地服务错误 ${response.status}`);
     return body;
   }
-  async function stop(message) {
+  async function stop(message, tone = 'error') {
     active = false;
     clearInterval(heartbeat);
     heartbeat = null;
     pause.disabled = true;
-    display(message);
+    display(message, tone);
     if (stopping) return stopping;
     if (registered) {
       registered = false;
@@ -231,17 +317,17 @@
               const longest = replies.reduce((max, text) => Math.max(max, text.length), 0);
               const idle = ui.isIdle() ? '是' : '否';
               console.log(`[OCS bridge] ${seconds}s 回复块=${replies.length} 可解析=${parsed} 空闲=${idle} 最长文本=${longest}`);
-              display(`解题中 ${seconds}s · 回复 ${replies.length} 块 · 可解析 ${parsed ? '是' : '否'} · 空闲 ${idle} · 字数 ${longest}`);
+              display(`解题 ${seconds}s · 回复 ${replies.length} · 可解析 ${parsed ? '是' : '否'} · 空闲 ${idle} · ${longest} 字`, 'busy');
             } catch (error) { console.log('[OCS bridge] 采样失败：' + error.message); }
           }, 1000);
           let answer;
           try {
-            display('正在解题：' + job.input.question.slice(0,80));
+            display('正在解题：' + job.input.question.slice(0,80), 'busy');
             answer = await runJob(job, ui, { running: () => active });
           } finally { clearInterval(probe); }
           if (!active) break;
           await request('/bridge/result', { id: job.id, answer });
-          display('本题已返回，等待下一题。');
+          display('本题已返回，等待下一题。', 'ok');
         }
         await new Promise(resolve => setTimeout(resolve, 200));
       }
@@ -267,7 +353,8 @@
         console.log(`[OCS bridge] 已连接，传输方式：${transport}`);
         registered = active = true;
         pause.disabled = false;
-        display(`已连接，等待 OCS 题目。（${transport}）`);
+        settings.hidden = true;
+        display(`已连接，等待 OCS 题目。（${transport}）`, 'ok');
         heartbeat = setInterval(async () => {
           if (heartbeatBusy || !active) return;
           heartbeatBusy = true;
@@ -284,7 +371,7 @@
     start.disabled = false;
     addressInput.disabled = tokenInput.disabled = false;
   });
-  pause.addEventListener('click', () => { void stop('已暂停。若网页仍在生成，请等待完成或手动停止，再重新启动。'); });
+  pause.addEventListener('click', () => { void stop('已暂停。若网页仍在生成，请等待完成或手动停止，再重新启动。', 'idle'); });
   // 标签页被隐藏时 Chrome 会限流甚至冻结页面，定时器停摆，题目会一直排在队列里等页面恢复
   document.addEventListener('visibilitychange', () => {
     const hidden = document.hidden;
@@ -292,6 +379,6 @@
     if (!active) return;
     display(hidden
       ? '⚠️ 页面已切到后台，Chrome 会冻结/限流本页面：OCS 的题目要等你切回来才开始处理。建议把 DeepSeek 单独放一个窗口。'
-      : '页面已回到前台，继续等待 OCS 题目。');
+      : '页面已回到前台，继续等待 OCS 题目。', hidden ? 'idle' : 'ok');
   });
 })();
