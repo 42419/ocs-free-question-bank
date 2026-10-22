@@ -50,7 +50,8 @@
     }
     return null;
   }
-  async function runJob(job, ui, { now = Date.now, sleep = ms => new Promise(r => setTimeout(r, ms)), running = () => true } = {}) {
+  async function runJob(job, ui, { now = Date.now, sleep = ms => new Promise(r => setTimeout(r, ms)), running = () => true,
+    typing = true, random = Math.random } = {}) {
     const check = () => {
       if (!running()) throw new Error('桥接已暂停');
       if (now() >= job.deadline) throw new Error('本题超时，请检查网页后重新启动');
@@ -65,7 +66,23 @@
       if (now() >= idleDeadline) throw new Error('网页仍在生成，等待 60 秒后放弃，请检查网页再重新启动');
       await sleep(150);
     }
-    ui.fill(job.prompt);
+    if (typing) {
+      // 一次 setValue 写满会和真人操作差别太大：停顿一下，再按随机长度分片敲进去
+      await sleep(200 + random() * 500);
+      const step = Math.max(8, Math.ceil(job.prompt.length / 60));
+      let typed = '';
+      while (typed.length < job.prompt.length) {
+        const size = Math.max(4, Math.round(step * (0.7 + random() * 0.6)));
+        typed = job.prompt.slice(0, typed.length + size);
+        ui.fill(typed);
+        check();
+        await sleep(15 + random() * 45);
+      }
+      if (ui.draft() !== job.prompt) ui.fill(job.prompt);
+      await sleep(150 + random() * 350);
+    } else {
+      ui.fill(job.prompt);
+    }
     const sendDeadline = Math.min(job.deadline, now() + 3000);
     while (!ui.canSend()) {
       check();

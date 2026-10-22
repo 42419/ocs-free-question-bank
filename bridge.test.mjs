@@ -27,7 +27,7 @@ function harness({ draft = '', replyId = 'job-1', streaming = false, busyMs = 0,
     url: () => 'https://chat.deepseek.com/a/chat/s/test',
     check: () => {}
   };
-  const options = { now: () => now, sleep: async ms => { now += ms; }, running: () => !cancel };
+  const options = { now: () => now, sleep: async ms => { now += ms; }, running: () => !cancel, typing: false };
   return { ui, options, result, clicks: () => clicks, sentAt: () => sentAt };
 }
 const job = { id: 'job-1', prompt: '测试题', deadline: 10000 };
@@ -38,6 +38,16 @@ test('send exactly once and return as soon as the reply stops changing', { skip:
   // 只等回复稳定 600ms，不等网页的“生成中”状态结束（实测可晚 90 秒）
   assert.ok(h.options.now() >= 600, `waited ${h.options.now()}ms`);
   assert.ok(h.options.now() < 2000, `waited ${h.options.now()}ms for an already complete answer`);
+});
+test('types the prompt in chunks with jitter instead of pasting it in one shot', { skip: !bridge.runJob }, async () => {
+  const h = harness();
+  let fills = 0;
+  const fill = h.ui.fill;
+  h.ui.fill = value => { fills++; fill(value); };
+  const longJob = { ...job, prompt: '题干'.repeat(80) };
+  assert.deepEqual(await bridge.runJob(longJob, h.ui, { ...h.options, typing: true, random: () => 0.5 }), h.result);
+  assert.ok(fills >= 10, `分片写入次数 ${fills}`);
+  assert.equal(h.clicks(), 1);
 });
 test('do not overwrite a draft or send cancelled tasks', { skip: !bridge.runJob }, async () => {
   for (const settings of [{ draft: '用户草稿' }, { cancel: true }]) {
