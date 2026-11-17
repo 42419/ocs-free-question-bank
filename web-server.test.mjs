@@ -45,7 +45,9 @@ test('no DeepSeek key needed; authentication and validation', async t => {
   assert.equal((await post('/search', { ...question, options: [1] })).status, 400);
   assert.equal((await post('/search', question)).status, 503);
   assert.equal((await post('/bridge/connect', {})).status, 400);
-  assert.equal((await post('/search', { ...question, question: 'x'.repeat(40000) })).status, 413);
+  // 题干超长先被字段校验拦下（400），请求体上限只负责挡超大载荷（413）
+  assert.equal((await post('/search', { ...question, question: 'x'.repeat(40000) })).status, 400);
+  assert.equal((await post('/search', { ...question, options: ['x'.repeat(2001)] })).status, 400);
   // 页面 fetch 走“简单请求”：不给 Authorization 头，口令放 body.token
   const plain = body => fetch(base + '/search', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(body) });
   assert.equal((await plain({ ...question, token: 'test-token' })).status, 503);
@@ -65,6 +67,11 @@ test('browser returns answer through actual HTTP and OCS handler', async t => {
   assert.deepEqual(result.data, [{ question: question.question, answer: '2#3', explanation: '质数只有两个正因数。' }]);
   const [wrapper] = JSON.parse(await readFile(new URL('./ocs-config.json', import.meta.url), 'utf8'));
   assert.deepEqual(Function(wrapper.handler)()(result), [[question.question, '2#3']]);
+});
+test('oversized request bodies are rejected before parsing', async t => {
+  const { post } = await fixture(t);
+  const response = await post('/search', { question: 'x'.repeat(2 * 1024 * 1024 + 1024) });
+  assert.equal(response.status, 413);
 });
 test('DeepSeek API backend answers OCS search without a browser bridge', async t => {
   let request;
@@ -94,6 +101,22 @@ test('DeepSeek API backend reports provider errors without exposing credentials'
   const body = await response.json();
   assert.match(body.message, /余额不足或请求频率受限/);
   assert.doesNotMatch(JSON.stringify(body), /secret-key/);
+});
+test('DeepSeek API backend strips question images and tells the model it cannot see them', async t => {
+  let request;
+  const apiSolver = createDeepSeekApiSolver({ apiKey: 'test-api-key', fetchImpl: async (url, options) => {
+    request = JSON.parse(options.body);
+    return Response.json({ choices: [{ finish_reason: 'stop', message: { content: '{"answers":[],"explanation":"看不到图"}' } }] });
+  } });
+  const { post } = await fixture(t, { apiSolver });
+  const response = await post('/search', { question: '看图作答 <img src="http://127.0.0.1:1/pic.png">', options: ['A. 对'], type: 'single' });
+  assert.equal(response.status, 200);
+  const sent = JSON.parse(request.messages[1].content);
+  assert.equal(sent.question.includes('pic.png'), false, 'API 模式不应把图片地址当文字发过去');
+  assert.match(sent.notice, /图片/);
+  assert.equal(sent.type, 'single');
+  // 模型如实说明看不到图时，OCS 收到的就是空答案，而不是编出来的结果
+  assert.deepEqual((await response.json()).data, []);
 });
 test('serial queue, capacity, exclusive browser and stale replies', async t => {
   const { post, call } = await fixture(t, { maxQueue: 2 });

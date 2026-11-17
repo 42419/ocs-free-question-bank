@@ -36,7 +36,7 @@ export function createDeepSeekApiSolver({ apiKey, model = 'deepseek-flash', fetc
           max_tokens: 512,
           response_format: { type: 'json_object' },
           messages: [
-            { role: 'system', content: '你是严谨的题目解答助手。只输出 JSON 对象，不要代码围栏或额外文本。格式为 {"answers":["答案"],"explanation":"简短理由"}。选择题填写完整选项文字；判断题填写正确或错误；填空按顺序逐空填写；无法确定时 answers 返回空数组。' },
+            { role: 'system', content: '你是严谨的题目解答助手。只输出 JSON 对象，不要代码围栏或额外文本。格式为 {"answers":["答案"],"explanation":"简短理由"}。选择题填写完整选项文字；判断题填写正确或错误；填空按顺序逐空填写；无法确定时 answers 返回空数组。输入里出现 notice 字段时，说明原题含图片而当前接口看不到图：只按文字作答，文字不足以判断就返回空数组并在 explanation 说明。' },
             { role: 'user', content: JSON.stringify(input) }
           ]
         })

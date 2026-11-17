@@ -159,6 +159,9 @@ class BridgeQueue {
   }
 }
 
+// 上限必须装得下 normalize 允许的最大载荷：题干 12000 字符（UTF-8 最多 48 KB）
+// ＋ 100 条各 2000 字符的选项（最多 800 KB），再留出 JSON 转义与字段名的余量。
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
 async function readJson(req) {
   // text/plain 也接受：页面用 fetch 直连时靠它把请求降级成“简单请求”，从而跳过 CORS 预检
   const type = req.headers['content-type']?.toLowerCase() || '';
@@ -167,7 +170,7 @@ async function readJson(req) {
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 32768) throw failure(413, '请求数据超过 32 KB');
+    if (size > MAX_BODY_BYTES) throw failure(413, '请求数据超过 2 MB');
     chunks.push(chunk);
   }
   try {
@@ -246,6 +249,8 @@ function normalize(input) {
   let options = input.options ?? [];
   if (typeof options === 'string') options = options.split('\n').filter(s => s.trim());
   if (!Array.isArray(options) || options.length > 100 || options.some(s => typeof s !== 'string')) throw failure(400, 'options 必须是字符串数组或换行分隔的字符串');
+  // 选项不设长度上限时，JSON 体上限就成了唯一约束，题干与选项的实际限制也对不上
+  if (options.some(s => s.length > 2000)) throw failure(400, 'options 中单个选项不能超过 2000 字符');
   if (input.type !== undefined && (typeof input.type !== 'string' || input.type.length > 40)) throw failure(400, 'type 必须是题型字符串');
   return { question: input.question.trim(), options, type: input.type || 'unknown' };
 }
@@ -326,19 +331,33 @@ export function createServer({ token, monitorIntervalMs = 250, apiSolver = null,
           })}`);
         }
         const raw = [input.question, ...input.options].join('\n');
-        const { images, failed } = await prepareImages(raw);
-        if (images.length || failed.length) {
-          // 抓到图就把链接从题干里删掉（页面会把图当文件上传）；没抓到也不留裸链接
-          input.question = stripImageUrls(input.question) || '（本题含图片，未能自动获取）';
-          input.options = input.options.map(stripImageUrls);
-          if (failed.length) logger(`${clock(new Date())} ⚠ ${failed.length} 张图片下载失败：${failed[0].slice(0, 120)}`);
+        // 网页桥接把图下载到本地、由插件当文件上传；官方 API 是纯文本接口，下载下来也没处放，
+        // 只能删掉图片标记，并用 notice 如实告诉模型“看不见图”，避免它凭空编一个答案。
+        let images = [];
+        let solverInput = input;
+        if (apiSolver) {
+          if (findImageUrls(raw).length) {
+            input.question = stripImageUrls(input.question) || '（本题含图片，当前 API 后端无法查看）';
+            input.options = input.options.map(stripImageUrls);
+            solverInput = { ...input, notice: '原题含图片，当前 API 接口只能看到文字。仅凭文字无法可靠作答时 answers 返回空数组，并在 explanation 说明原因。' };
+            logger(`${clock(new Date())} ⚠ 当前为 DeepSeek API 后端，无法读取题目图片，已去掉图片链接`);
+          }
+        } else {
+          const prepared = await prepareImages(raw);
+          images = prepared.images;
+          if (images.length || prepared.failed.length) {
+            // 抓到图就把链接从题干里删掉（页面会把图当文件上传）；没抓到也不留裸链接
+            input.question = stripImageUrls(input.question) || '（本题含图片，未能自动获取）';
+            input.options = input.options.map(stripImageUrls);
+            if (prepared.failed.length) logger(`${clock(new Date())} ⚠ ${prepared.failed.length} 张图片下载失败：${prepared.failed[0].slice(0, 120)}`);
+          }
         }
         const abort = new AbortController();
         const onClose = () => { if (!res.writableEnded) abort.abort(); };
         res.on('close', onClose);
         try {
           if (apiSolver) {
-            const answer = await apiSolver(input, abort.signal);
+            const answer = await apiSolver(solverInput, abort.signal);
             if (!answer || !Array.isArray(answer.answers) || answer.answers.length > 100 ||
                 answer.answers.some(value => typeof value !== 'string' || !value.trim() || value.length > 12000) ||
                 typeof answer.explanation !== 'string' || answer.explanation.length > 12000 ||

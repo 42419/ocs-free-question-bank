@@ -131,7 +131,7 @@ DeepSeek 网页会自动出现题目。成功响应示例：
 {"code":0,"message":"success","data":[{"question":"哪些是质数？","answer":"2#3","explanation":"2和3是质数。"}]}
 ```
 
-`options` 支持字符串数组或换行分隔字符串；`type` 支持 single、multiple、judgement、completion、unknown。题目和选项会发送到你的 DeepSeek 网页对话并留在聊天记录中。
+`options` 支持字符串数组或换行分隔字符串；`type` 支持 single、multiple、judgement、completion、unknown。题目和选项会发送到你的 DeepSeek 网页对话并留在聊天记录中。单次请求上限 2 MB；题干最长 12000 字符，选项最多 100 条、每条最长 2000 字符。
 
 ## 保姆级演示：从安装到 OCS 实际搜题
 
@@ -377,6 +377,8 @@ ssh -N -L 3000:127.0.0.1:3000 用户名@Linux服务器地址
 ## 可选：DeepSeek 官方 API 后端（付费，不推荐）
 
 官方 API 模式不启动浏览器，也不安装油猴脚本，Node.js 服务直接调用 DeepSeek API，Windows/Linux 均可使用。**API 按 token 计费，会产生实际费用，因此不推荐作为默认方案。** 当前价格以 [DeepSeek 官方定价页](https://api-docs.deepseek.com/quick_start/pricing/) 为准。本项目只是调用 API，不代购、不代充，也无法替你控制实际账单。
+
+DeepSeek 官方 API 是纯文本接口：题干里的图片链接会被去掉并提示模型“看不到图”，只有图片才能作答的题目会返回空答案，需要看图请改用网页桥接模式。
 
 在 Linux 服务器安装 Node.js 22+，下载项目并编辑 `.env`。配置如下：
 
