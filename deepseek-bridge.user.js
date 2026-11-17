@@ -4,7 +4,7 @@
 // @author       XuanHanHan（原作者）、42419（fork 维护）
 // @homepageURL  https://github.com/XuanHanHan/ocs-free-question-bank
 // @source       https://github.com/XuanHanHan/ocs-free-question-bank
-// @version      1.14.0
+// @version      1.14.1
 // @description  在已登录的 DeepSeek 网页处理本机 OCS 题目，无需 DeepSeek API 密钥
 // @match        https://chat.deepseek.com/*
 // @grant        GM_xmlhttpRequest
@@ -158,7 +158,7 @@
     return { answers, explanation };
   }
   // 两端用同一套版本号：与 package.json 和脚本头部的 @version 保持一致（改的时候三处一起改）
-  const VERSION = '1.14.0';
+  const VERSION = '1.14.1';
   /** 版本比较：两端互查时用，缺省段按 0 处理 */
   function compareVersion(a, b) {
     const parts = value => String(value || '').split(/[^\d]+/).filter(Boolean).map(Number);

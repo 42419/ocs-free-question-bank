@@ -118,6 +118,49 @@ test('DeepSeek API backend strips question images and tells the model it cannot 
   // 模型如实说明看不到图时，OCS 收到的就是空答案，而不是编出来的结果
   assert.deepEqual((await response.json()).data, []);
 });
+test('judgement prompts skip the lettered option list and map letters back to option text', async t => {
+  const { post, call } = await fixture(t);
+  await call('/bridge/connect');
+  const waiting = post('/search', { question: '群体能表现出远超个体能力之和的智能行为。（ ）', options: ['对', '错'], type: 'judgement' });
+  const job = await claim(call);
+  // 列 A/B 会诱导模型答字母，而 OCS 的判断题解析器只认「对/错/正确/错误」
+  assert.equal(job.prompt.includes('选项：'), false);
+  assert.match(job.prompt, /只写「对」或「错」/);
+  await call('/bridge/result', { id: job.id, answer: { bridge_id: job.id, answers: ['对'], explanation: '说法正确。' } });
+  assert.deepEqual((await (await waiting).json()).data[0].answer, '对');
+});
+test('judgement letters follow the actual option order', async t => {
+  const { post, call } = await fixture(t);
+  await call('/bridge/connect');
+  const cases = [
+    [['对', '错'], 'A', '对'],
+    [['对', '错'], 'B', '错'],
+    // 选项顺序反过来：A 是错、B 是对
+    [['错', '对'], 'A', '错'],
+    [['错', '对'], 'B', '对'],
+    // 选项自带字母前缀时按原文返回，OCS 仍能匹配到同一个选项
+    [['A. 错', 'B. 对'], 'A', 'A. 错'],
+    [['A. 错', 'B. 对'], 'B', 'B. 对'],
+    // 没拿到选项就不猜，原样交给 OCS 报「无法选择」，避免猜反
+    [[], 'B', 'B']
+  ];
+  for (const [options, letter, expected] of cases) {
+    const waiting = post('/search', { question: `判断题 ${expected}`, options, type: 'judgement' });
+    const job = await claim(call);
+    await call('/bridge/result', { id: job.id, answer: { bridge_id: job.id, answers: [letter], explanation: '理由' } });
+    const result = await (await waiting).json();
+    assert.equal(result.data[0].answer, expected, `${options.join('/')} + ${letter}`);
+  }
+});
+test('DeepSeek API backend maps judgement letters to the option text too', async t => {
+  const apiSolver = createDeepSeekApiSolver({ apiKey: 'test-api-key', fetchImpl: async () => Response.json({
+    choices: [{ finish_reason: 'stop', message: { content: '{"answers":["A"],"explanation":"这句话不对。"}' } }]
+  }) });
+  const { post } = await fixture(t, { apiSolver });
+  const response = await post('/search', { question: '群体能表现出远超个体能力之和的智能行为。（ ）', options: ['错', '对'], type: 'judgement' });
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).data, [{ question: '群体能表现出远超个体能力之和的智能行为。（ ）', answer: '错', explanation: '这句话不对。' }]);
+});
 test('serial queue, capacity, exclusive browser and stale replies', async t => {
   const { post, call } = await fixture(t, { maxQueue: 2 });
   await call('/bridge/connect');

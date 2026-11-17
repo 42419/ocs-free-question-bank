@@ -28,16 +28,29 @@ function buildPrompt(input) {
   const hint = {
     single: '单选题，只选一个。',
     multiple: '多选题，有几个选几个，用顿号隔开。',
-    judgement: '判断题，写「对」或「错」。',
+    judgement: '判断题，只写「对」或「错」，不要写 A/B。',
     completion: '填空题，按顺序写要填的内容。',
     fill: '填空题，按顺序写要填的内容。'
   }[input.type] || '';
-  const options = input.options.length
-    ? `\n\n选项：\n${input.options.map((option, index) => `${String.fromCharCode(65 + index)}. ${option}`).join('\n')}`
-    : '';
+  // 判断题不列选项：列出 A/B 会让模型答字母，而 OCS 的判断题解析器只认「对/错/正确/错误」
+  const options = input.type === 'judgement' || !input.options.length
+    ? ''
+    : `\n\n选项：\n${input.options.map((option, index) => `${String.fromCharCode(65 + index)}. ${option}`).join('\n')}`;
   return '帮我看看这道题，先简单说下理由，最后一行写「答案：X」就行，答案后面别加括号说明。' + hint +
     '如果这道题没有唯一答案（主观题、要结合个人情况写），直接写「无法作答」并说明原因，不要编一个答案。' +
     `\n\n题目：${input.question}${options}`;
+}
+
+/** 判断题答案若给了字母（A/B…），换成对应选项原文；OCS 的判断题解析器只做文本匹配 */
+function normalizeJudgement(input, answers) {
+  if (input.type !== 'judgement' || !Array.isArray(answers) || answers.length !== 1) return answers;
+  const letter = String(answers[0]).trim().match(/^([A-Za-z])(?![A-Za-z])/);
+  if (!letter) return answers;
+  const index = letter[1].toUpperCase().charCodeAt(0) - 65;
+  const option = input.options[index];
+  // 只用实际选项原文：拿不到选项就不猜。猜 A=对 在「A. 错 / B. 对」的卷子上会直接答反，
+  // 宁可让 OCS 明确报「无法选择」，也不要静默选中错误选项
+  return typeof option === 'string' && option.trim() ? [option.trim()] : answers;
 }
 
 class BridgeQueue {
@@ -148,6 +161,8 @@ class BridgeQueue {
       this.pause(error);
       throw error;
     }
+    // 判断题的 A/B 换成选项原文：OCS 的判断题解析器不认识字母，只会报「无法选择」
+    if (answer && answer.bridge_id === id) answer.answers = normalizeJudgement(job.input, answer.answers);
     if (!answer || answer.bridge_id !== id || !Array.isArray(answer.answers) || answer.answers.length > 100 ||
         answer.answers.some(s => typeof s !== 'string' || !s.trim() || s.length > 12000) ||
         typeof answer.explanation !== 'string' || answer.explanation.length > 12000 ||
@@ -362,6 +377,8 @@ export function createServer({ token, monitorIntervalMs = 250, apiSolver = null,
         try {
           if (apiSolver) {
             const answer = await apiSolver(solverInput, abort.signal);
+            // 与网页桥接同一套判断题归一化：字母答案换成选项原文
+            if (answer) answer.answers = normalizeJudgement(input, answer.answers);
             if (!answer || !Array.isArray(answer.answers) || answer.answers.length > 100 ||
                 answer.answers.some(value => typeof value !== 'string' || !value.trim() || value.length > 12000) ||
                 typeof answer.explanation !== 'string' || answer.explanation.length > 12000 ||
