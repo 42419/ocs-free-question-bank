@@ -316,6 +316,15 @@ export function createServer({ token, monitorIntervalMs = 250, apiSolver = null,
       if (req.headers.authorization !== `Bearer ${token}` && body.token !== token) throw failure(401, 'API_TOKEN 不正确');
       if (requestPath === '/search') {
         const input = normalize(body);
+        // 排查 OCS 版本差异时用：OCS_DEBUG=1 打印实际收到的字段（题干只截前 200 字）
+        if (process.env.OCS_DEBUG) {
+          logger(`${clock(new Date())} DEBUG /search ${JSON.stringify({
+            keys: Object.keys(body).filter(key => key !== 'token'),
+            question: input.question.slice(0, 200),
+            options: input.options.slice(0, 5),
+            type: input.type
+          })}`);
+        }
         const raw = [input.question, ...input.options].join('\n');
         const { images, failed } = await prepareImages(raw);
         if (images.length || failed.length) {
