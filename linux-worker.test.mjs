@@ -2,27 +2,54 @@ import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { createServer } from './server.mjs';
-import { bridgeConfig, runBridgeWorker } from './linux-worker.mjs';
+import { bridgeConfig, installPageBridge, runBridgeWorker } from './linux-worker.mjs';
 
 let browser;
 before(async () => { browser = await chromium.launch({ headless: true, channel: process.env.TEST_BROWSER_CHANNEL || 'chromium', chromiumSandbox: true }); });
 after(async () => { await browser?.close(); });
 
-async function fixture(t, { draft = '', generate = true } = {}) {
+async function fixture(t, { draft = '', generate = true, limitFirst = false, quota = false } = {}) {
   const server = createServer({ token: 'test-token', heartbeatTimeoutMs: 2000, monitorIntervalMs: 20, logger: () => {} });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = `http://127.0.0.1:${server.address().port}`;
   const page = await browser.newPage();
   // No DeepSeek account or API request is used. Exercise the real browser DOM and local HTTP bridge.
   await page.route('**/*', route => route.abort());
-  await page.setContent(`<textarea placeholder="DeepSeek"></textarea>
+  await page.setContent(`<button id="new-chat">开启新对话</button>
+    <textarea placeholder="DeepSeek"></textarea>
     <div role="button" class="ds-button--primary ds-button--circle" aria-disabled="true">发送</div>
+    <div id="toast" role="alert" style="display:none"></div>
     <script>
       window.sent = 0;
+      window.chats = 0;
       const input = document.querySelector('textarea'), button = document.querySelector('[role=button]');
+      const toast = document.getElementById('toast');
       input.addEventListener('input', () => button.setAttribute('aria-disabled', input.value ? 'false' : 'true'));
+      document.getElementById('new-chat').addEventListener('click', () => {
+        window.chats++;
+        toast.style.display = 'none';
+        toast.textContent = '';
+        document.querySelectorAll('.ds-assistant-message-main-content').forEach(node => node.remove());
+        input.value = '';
+        button.setAttribute('aria-disabled', 'true');
+        button.innerHTML = '发送';
+      });
       button.addEventListener('click', () => {
         window.sent++;
+        // 会话级限制：提示“消息数量达到上限”，草稿留在输入框里，等桥接换会话后重发
+        if (${limitFirst} && window.sent === 1) {
+          toast.textContent = '消息数量达到上限，请开启新对话';
+          toast.style.display = 'block';
+          return;
+        }
+        // 每日额度：清空草稿并给出额度文案，桥接应当熔断
+        if (${quota}) {
+          input.value = '';
+          button.setAttribute('aria-disabled', 'true');
+          toast.textContent = '因服务器繁忙，使用额度已达上限';
+          toast.style.display = 'block';
+          return;
+        }
         input.value = '';
         button.setAttribute('aria-disabled', 'true');
         button.innerHTML = '<span class="ds-loading">生成中</span>';
@@ -118,5 +145,58 @@ test('OCS cancellation keeps the worker alive and never repeats a send', { timeo
   assert.equal(await f.page.evaluate(() => window.sent), 1);
   f.controller.abort();
   assert.equal((await done).error, null);
+  assert.equal((await f.health()).connected, false);
+});
+
+test('notice scanning drops answer text and ignores the sidebar new-chat button', { timeout: 15000 }, async t => {
+  const page = await browser.newPage();
+  t.after(() => page.close());
+  await page.setContent(`<button>开启新对话</button>
+    <textarea placeholder="DeepSeek"></textarea>
+    <div class="ds-assistant-message-main-content">建议开启新对话后重试</div>
+    <div role="alert">因服务器繁忙，使用额度已达上限</div>`);
+  await installPageBridge(page);
+  const result = await page.evaluate(() => {
+    const { createDomAdapter, classifyNotice } = window.__ocsLinuxBridge;
+    const ui = createDomAdapter(document);
+    const text = ui.noticeText();
+    return { text, kind: classifyNotice(text)?.kind };
+  });
+  assert.equal(result.kind, 'daily');
+  assert.doesNotMatch(result.text, /建议开启新对话/, '回答正文不应参与限额判定');
+  // 去掉额度提示后，页面上只剩侧栏按钮与回答里的同类措辞，不能判成限制
+  const remaining = await page.evaluate(() => {
+    document.querySelector('[role=alert]').remove();
+    const { createDomAdapter, classifyNotice } = window.__ocsLinuxBridge;
+    return classifyNotice(createDomAdapter(document).noticeText());
+  });
+  assert.equal(remaining, null);
+});
+
+test('reopens the conversation when DeepSeek reports the message limit', { timeout: 60000 }, async t => {
+  const f = await fixture(t, { limitFirst: true });
+  const done = f.start();
+  await until(async () => (await f.health()).connected);
+  const question = '哪些是质数？';
+  const response = await f.post('/search', { question, options: ['2', '3', '4'], type: 'multiple' });
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).data, [{ question, answer: '2#3', explanation: '2和3是质数。' }]);
+  // 第一次发送被限制，换会话后重发一次才拿到答案
+  assert.equal(await f.page.evaluate(() => window.sent), 2);
+  assert.equal(await f.page.evaluate(() => window.chats), 1);
+  f.controller.abort();
+  assert.equal((await done).error, null);
+});
+
+test('daily quota stops the worker, reports the reason and never resends', { timeout: 30000 }, async t => {
+  const f = await fixture(t, { quota: true });
+  const done = f.start();
+  await until(async () => (await f.health()).connected);
+  const response = await f.post('/search', { question: '哪些是质数？', options: [], type: 'unknown' });
+  assert.equal(response.status, 503);
+  assert.match((await response.json()).message, /今日使用额度已达上限/);
+  const result = await done;
+  assert.match(result.error.message, /今日使用额度已达上限/);
+  assert.equal(await f.page.evaluate(() => window.sent), 1);
   assert.equal((await f.health()).connected, false);
 });

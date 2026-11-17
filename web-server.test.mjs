@@ -169,6 +169,18 @@ test('manual pause cancels active and queued requests', async t => {
   assert.equal((await call('/bridge/poll')).code, 409);
   assert.equal((await call('/bridge/connect')).code, 0);
 });
+test('pause reason reaches OCS and health instead of the generic hint', async t => {
+  const reason = 'DeepSeek 今日使用额度已达上限（每日限额），请次日再试';
+  const { base, post, call } = await fixture(t);
+  await call('/bridge/connect');
+  await call('/bridge/pause', { reason: `  ${reason}  ` });
+  const response = await post('/search', question);
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).message, reason);
+  const health = await (await fetch(base + '/health')).json();
+  assert.equal(health.connected, false);
+  assert.equal(health.lastError.message, reason);
+});
 test('lost heartbeat cancels work', async t => {
   const { post, call } = await fixture(t, { heartbeatTimeoutMs: 35, monitorIntervalMs: 10 });
   await call('/bridge/connect');

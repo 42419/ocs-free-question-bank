@@ -7,6 +7,22 @@ import { createInterface } from 'node:readline/promises';
 
 const bridgeSource = () => readFile(new URL('./deepseek-bridge.user.js', import.meta.url), 'utf8');
 
+// 与脚本里的 QUOTA_MESSAGE 保持一致：跨进程只能按文案判定，无法共享异常类型
+const QUOTA_MARKER = '今日使用额度已达上限';
+const QUOTA_MESSAGE = 'DeepSeek 今日使用额度已达上限（每日限额），请次日再试';
+// 与脚本 LIMITS.pauseAfterRotateFailures 保持一致
+const ROTATE_FAILURE_LIMIT = 3;
+
+/** 可选的外部通知命令：命中每日额度时执行一次，文案放在 NOTIFY_TEXT 里 */
+async function runNotifyCommand(command, text, log = () => {}) {
+  if (!command) return;
+  try {
+    const { spawn } = await import('node:child_process');
+    const child = spawn(command, { shell: true, env: { ...process.env, NOTIFY_TEXT: text }, stdio: 'ignore' });
+    child.on('error', () => {});
+  } catch (error) { log(`通知命令执行失败：${error.message}`); }
+}
+
 export function bridgeConfig(env = process.env) {
   const url = new URL(env.BRIDGE_URL || `http://127.0.0.1:${env.PORT || 3000}`);
   if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(url.hostname) ||
@@ -49,11 +65,11 @@ function abortable(promise, signal) {
 }
 
 export async function runBridgeWorker({ page, address, token, signal = new AbortController().signal,
-  log = console.log, pollMs = 200, heartbeatMs = 5000, fetchImpl = fetch } = {}) {
+  log = console.log, pollMs = 200, heartbeatMs = 5000, fetchImpl = fetch, notifyCommand = '' } = {}) {
   const clientId = randomUUID();
   const monitor = new AbortController();
   const runningSignal = AbortSignal.any([signal, monitor.signal]);
-  let connectAttempted = false, heartbeatBusy = false, heartbeat;
+  let connectAttempted = false, heartbeatBusy = false, heartbeat, pauseReason = '', rotateFailures = 0;
   const request = async (path, data = {}, cancellation = runningSignal) => {
     const requestSignal = cancellation
       ? AbortSignal.any([cancellation, AbortSignal.timeout(8000)]) : AbortSignal.timeout(3000);
@@ -90,22 +106,42 @@ export async function runBridgeWorker({ page, address, token, signal = new Abort
         log('正在解题。');
         const answer = await abortable(page.evaluate(({ job, blobBase }) => {
           const { runJob, createDomAdapter } = window.__ocsLinuxBridge;
-          return runJob(job, createDomAdapter(document), { running: () => window.__ocsLinuxRunning, blobBase });
+          return runJob(job, createDomAdapter(document), {
+            running: () => window.__ocsLinuxRunning,
+            blobBase,
+            alive: () => !!window.__ocsLinuxBridge
+          });
         }, { job, blobBase: address }), runningSignal);
-        await request('/bridge/result', { id: job.id, answer });
-        log('答案已返回 OCS，等待下一题。');
+        // rotateFailed 只是桥接内部的本地标记，回传前剥掉；连续多次说明页面已没法自愈，直接停
+        const { rotateFailed, ...result } = answer;
+        await request('/bridge/result', { id: job.id, answer: result });
+        if (rotateFailed) {
+          rotateFailures += 1;
+          if (rotateFailures >= ROTATE_FAILURE_LIMIT) throw new Error('连续多次无法新开对话，请手动清理网页会话后重新启动。');
+        } else rotateFailures = 0;
+        log(rotateFailed ? '本题未作答：无法新开对话。' : '答案已返回 OCS，等待下一题。');
       }
       await sleep(pollMs, undefined, { signal: runningSignal });
     }
     runningSignal.throwIfAborted();
   } catch (error) {
-    if (!signal.aborted) throw monitor.signal.aborted ? monitor.signal.reason : error;
+    if (!signal.aborted) {
+      const text = String(error?.message || error);
+      // 每日额度用尽：留下原因、发一次外部通知，再让进程退出 —— 不自动重试，等人工确认
+      if (text.includes(QUOTA_MARKER)) {
+        pauseReason = QUOTA_MESSAGE;
+        log(`⚠ ${QUOTA_MESSAGE}，桥接已停止。`);
+        await runNotifyCommand(notifyCommand, QUOTA_MESSAGE, log);
+        throw new Error(`${QUOTA_MESSAGE}\n桥接已停止：今日额度已用尽，请次日再运行。`);
+      }
+      throw monitor.signal.aborted ? monitor.signal.reason : error;
+    }
   } finally {
     clearInterval(heartbeat);
     runningSignal.removeEventListener('abort', stopPage);
     stopPage();
     // Also release an uncertain registration; clientId prevents cancelling a different worker.
-    if (connectAttempted) await request('/bridge/pause', {}, null).catch(() => {});
+    if (connectAttempted) await request('/bridge/pause', pauseReason ? { reason: pauseReason } : {}, null).catch(() => {});
   }
 }
 
@@ -147,7 +183,7 @@ async function main() {
       console.log('会话已保存。关闭这个登录进程后，可运行 npm run linux:start。');
     } else {
       await page.locator('textarea[placeholder*="DeepSeek"]').waitFor({ state: 'visible', timeout: 30000 });
-      await runBridgeWorker({ page, ...config, signal: controller.signal });
+      await runBridgeWorker({ page, ...config, signal: controller.signal, notifyCommand: process.env.NOTIFY_CMD || '' });
     }
   } catch (error) {
     if (!controller.signal.aborted) {

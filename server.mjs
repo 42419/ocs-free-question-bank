@@ -49,6 +49,8 @@ class BridgeQueue {
     this.worker = null;
     this.jobs = [];
     this.lastError = null;
+    // 暂停原因单独留一份：桥接已停时 /search 用这句回答，比“请先启动桥接”更能说明为什么停
+    this.pausedReason = null;
   }
   /** 记录最近一次失败，成功后清空；/health 与请求日志靠它说明“为什么没反应” */
   note(status, message) { this.lastError = { status, message, at: new Date().toISOString() }; }
@@ -70,6 +72,7 @@ class BridgeQueue {
     if (this.jobs.length) throw failure(409, '仍有任务运行，请先暂停桥接');
     this.worker = { id: clientId, seen: Date.now() };
     this.lastError = null;
+    this.pausedReason = null;
   }
   touch(clientId) {
     this.check();
@@ -99,12 +102,13 @@ class BridgeQueue {
   }
   pause(error = failure(503, '网页桥接已暂停')) {
     this.worker = null;
+    this.pausedReason = error.message;
     this.note(error.status, error.message);
     for (const job of [...this.jobs]) this.settle(job, error);
   }
   enqueue(input, signal, images = []) {
     this.check();
-    if (!this.worker) throw failure(503, '请先在已登录的 DeepSeek 网页启动桥接脚本');
+    if (!this.worker) throw failure(503, this.pausedReason || '请先在已登录的 DeepSeek 网页启动桥接脚本');
     if (this.jobs.length >= this.maxQueue) throw failure(429, '队列已满，请将 OCS 查询线程数设为 1');
     if (signal?.aborted) throw failure(499, '查询已取消');
     return new Promise((resolve, reject) => {
@@ -391,7 +395,12 @@ export function createServer({ token, monitorIntervalMs = 250, apiSolver = null,
         return reply(200, { code: 0, job, message: job ? `领取题目（排队 ${Date.now() - job.enqueuedAt}ms）` : '' });
       }
       if (requestPath === '/bridge/result') queue.complete(clientId, body.id, body.answer);
-      if (requestPath === '/bridge/pause') { queue.touch(clientId); queue.pause(); }
+      if (requestPath === '/bridge/pause') {
+        queue.touch(clientId);
+        // 限额等终止原因由桥接上报，透传到 lastError 和后续 /search 的 503 文案
+        const reason = typeof body.reason === 'string' ? body.reason.replace(/\s+/g, ' ').trim().slice(0, 200) : '';
+        queue.pause(reason ? failure(503, reason) : undefined);
+      }
       reply(200, { code: 0 });
     } catch (error) {
       const known = error instanceof BridgeError || Number.isInteger(error?.status);

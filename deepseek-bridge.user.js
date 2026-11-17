@@ -4,12 +4,13 @@
 // @author       XuanHanHan（原作者）、42419（fork 维护）
 // @homepageURL  https://github.com/XuanHanHan/ocs-free-question-bank
 // @source       https://github.com/XuanHanHan/ocs-free-question-bank
-// @version      1.13.1
+// @version      1.14.0
 // @description  在已登录的 DeepSeek 网页处理本机 OCS 题目，无需 DeepSeek API 密钥
 // @match        https://chat.deepseek.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_notification
 // @connect      127.0.0.1
 // @connect      localhost
 // @updateURL    https://raw.githubusercontent.com/42419/ocs-free-question-bank/main/deepseek-bridge.user.js
@@ -73,6 +74,53 @@
     const list = answers.map(stripNote).filter(item => item && item.length <= maxLength && !/[。！？!?]/.test(item));
     return list.length > maxCount ? [] : list;
   }
+  // 2026-11 起 DeepSeek 对 App/网页版 C 端限额：会话级限制可以自愈，每日额度必须熔断
+  const LIMITS = {
+    rotate: true,                   // 会话级限制时自动新开对话
+    maxRotationsPerJob: 1,          // 单题最多轮换次数
+    minRemainingMsForRotate: 35000, // 剩余时间不够打字+生成就不折腾，直接回空答案
+    scanIntervalMs: 700,            // 限制文案的采样间隔（body.innerText 不便宜）
+    notifyDailyQuota: true,
+    notifyThrottleMs: 600000        // 同一进程 10 分钟内只通知一次
+  };
+  // 只收窄到明确的系统文案：侧边栏的“开启新对话”按钮一直都在，泛匹配会把正常页面判成超限
+  const NOTICE_PATTERNS = {
+    daily: [/使用额度已达上限/, /额度已达上限/, /额度已用完/, /配额已用尽/, /usage limit reached/i, /daily (?:usage )?(?:limit|quota)/i],
+    conversation: [/消息数量(?:已达|达到)上限/, /请开启新对话/, /长对话暂不可用/, /该对话暂不可用/, /超过\s*\d+\s*(?:小时|天)的长对话/, /导出(?:该)?对话/, /会话(?:数量)?(?:已达|达到)上限/],
+    input: [/内容超长/, /请删减后再试/, /输入过长/, /信息过长/]
+  };
+  function noticeExcerpt(text, patterns) {
+    for (const pattern of patterns) {
+      const hit = String(text).match(pattern);
+      if (hit) {
+        const start = Math.max(0, hit.index - 16);
+        return String(text).slice(start, hit.index + hit[0].length + 48).replace(/\s+/g, ' ').trim();
+      }
+    }
+    return '';
+  }
+  /** 判定页面文案属于哪一类限制；daily 优先于会话级与输入级，避免把熔断当成可重试 */
+  function classifyNotice(text) {
+    const daily = noticeExcerpt(text, NOTICE_PATTERNS.daily);
+    if (daily) return { kind: 'daily', text: daily };
+    const conversation = noticeExcerpt(text, NOTICE_PATTERNS.conversation);
+    if (conversation) return { kind: 'conversation', text: conversation };
+    const input = noticeExcerpt(text, NOTICE_PATTERNS.input);
+    if (input) return { kind: 'input', text: input };
+    return null;
+  }
+  const QUOTA_MESSAGE = 'DeepSeek 今日使用额度已达上限（每日限额），请次日再试';
+  // SSE 的额度提示可能渲染在回答区里，被“剔除回答”后扫不到：再用整句在全页文本里兜底
+  const EXACT_DAILY = /使用额度已达上限[，,]\s*请额度恢复后再试/;
+  function exactDailyNotice(text) {
+    const hit = String(text || '').match(EXACT_DAILY);
+    return hit ? { kind: 'daily', text: hit[0] } : null;
+  }
+  function quotaError(detail) {
+    const error = new Error(QUOTA_MESSAGE + (detail ? '：' + detail : ''));
+    error.code = 'QUOTA_DAILY';
+    return error;
+  }
   /** 解析网页回答：优先按自然语言的「答案：X」取，模型仍回 JSON 时也能兼容 */
   function parseAnswer(text, type = 'unknown') {
     const raw = String(text || '').trim();
@@ -110,7 +158,7 @@
     return { answers, explanation };
   }
   // 两端用同一套版本号：与 package.json 和脚本头部的 @version 保持一致（改的时候三处一起改）
-  const VERSION = '1.13.1';
+  const VERSION = '1.14.0';
   /** 版本比较：两端互查时用，缺省段按 0 处理 */
   function compareVersion(a, b) {
     const parts = value => String(value || '').split(/[^\d]+/).filter(Boolean).map(Number);
@@ -139,12 +187,22 @@
     return jitter(answered % pace.longEvery === 0 ? pace.longCooldown : pace.cooldown, random);
   }
   async function runJob(job, ui, { now = Date.now, sleep = ms => new Promise(r => setTimeout(r, ms)), running = () => true,
-    typing = true, random = Math.random, pace = PACE, blobBase = '' } = {}) {
+    typing = true, random = Math.random, pace = PACE, blobBase = '', limits = LIMITS,
+    notify = () => {}, alive = () => true } = {}) {
     const check = () => {
       if (!running()) throw new Error('桥接已暂停');
       if (now() >= job.deadline) throw new Error('本题超时，请检查网页后重新启动');
       ui.check();
     };
+    const remaining = () => job.deadline - now();
+    const readNotice = () => {
+      if (typeof ui.noticeText !== 'function') return null;
+      const stripped = classifyNotice(ui.noticeText());
+      if (stripped) return stripped;
+      return typeof ui.bodyText === 'function' ? exactDailyNotice(ui.bodyText()) : null;
+    };
+    const emptyAnswer = (explanation, rotateFailed = false) => ({ bridge_id: job.id, answers: [], explanation,
+      ...(rotateFailed ? { rotateFailed: true } : {}) });
     // 把服务端下载好的图片做成 File 塞进网页的上传控件，等同于用户点回形针选图；找不到控件就退化成纯文字
     const attachImages = async images => {
       const input = ui.fileInput();
@@ -163,79 +221,184 @@
       input.dispatchEvent(new Event('change', { bubbles: true }));
       return transfer.files.length;
     };
-    check();
-    if (ui.draft().trim()) throw new Error('输入框有草稿，请清空后重新启动桥接');
-    // 上一题可能还在收尾：先等页面空闲再发，避免把新题塞进正在生成的对话
-    const idleDeadline = Math.min(job.deadline, now() + 60000);
-    while (!ui.isIdle()) {
-      check();
-      if (now() >= idleDeadline) throw new Error('网页仍在生成，等待 60 秒后放弃，请检查网页再重新启动');
-      await sleep(150);
-    }
-    // 记下当前已有的回复条数与最后一条内容，之后用来判断哪条是这一题的新回答
-    const baseline = ui.count();
-    const baselineText = ui.replies().slice(-1)[0] || '';
-    // 图片先挂上去，上传和打字并行
-    if (job.images?.length) await attachImages(job.images);
-    if (typing) {
-      // 一次 setValue 写满会和真人操作差别太大：停顿一下，再按随机长度分片敲进去
-      await sleep(jitter(pace.beforeType, random));
-      const step = Math.max(pace.chunk[0], Math.ceil(job.prompt.length / 80));
-      let typed = '';
-      while (typed.length < job.prompt.length) {
-        const size = Math.max(2, Math.round(step * (0.6 + random() * 0.8)));
-        typed = job.prompt.slice(0, typed.length + size);
-        ui.fill(typed);
-        check();
-        await sleep(jitter(pace.chunkGap, random));
+    // 会话级限制：点侧边栏“开启新对话”。只走 SPA —— 整页跳转会让油猴脚本重新初始化，桥接静默掉线
+    const rotate = async () => {
+      const before = ui.url();
+      if (typeof ui.newChat !== 'function' || !ui.newChat()) {
+        throw new Error('未找到“开启新对话”按钮，请手动新开对话后重新启动桥接');
       }
-      if (ui.draft() !== job.prompt) ui.fill(job.prompt);
-      await sleep(jitter(pace.beforeSend, random));
-    } else {
-      ui.fill(job.prompt);
-    }
-    // 图片上传是异步的，给缩略图/上传收尾留点时间再点发送
-    if (job.images?.length) await sleep(1200 + random() * 800);
-    // 带图时上传期间发送按钮会一直灰着，给更长的等待
-    const sendDeadline = Math.min(job.deadline, now() + (job.images?.length ? 20000 : 3000));
-    while (!ui.canSend()) {
+      const rotateDeadline = Math.min(job.deadline, now() + 6000);
+      // 有些会话新建后地址不变，等两秒确认草稿与回复都已清空再继续
+      const acceptAt = now() + 2000;
+      while (true) {
+        check();
+        if (!alive()) throw new Error('页面已刷新，桥接已停止，请重新启动');
+        const fresh = typeof ui.isFreshChat === 'function' && ui.isFreshChat();
+        if (fresh && ui.url() !== before) return;
+        if (fresh && now() >= acceptAt) return;
+        if (now() >= rotateDeadline) throw new Error('新开对话后页面未就绪，请手动新建对话后重新启动桥接');
+        await sleep(120);
+      }
+    };
+    const waitIdle = async () => {
+      // 上一题可能还在收尾：先等页面空闲再发，避免把新题塞进正在生成的对话
+      const idleDeadline = Math.min(job.deadline, now() + 60000);
+      while (!ui.isIdle()) {
+        check();
+        if (now() >= idleDeadline) throw new Error('网页仍在生成，等待 60 秒后放弃，请检查网页再重新启动');
+        await sleep(150);
+      }
+    };
+    let lastScan = 0;
+    // 发送一题并等待网页确认接收；被“限制提示 + 保留草稿”拒绝时抛 SEND_BLOCKED，交给调用方决定是否换会话
+    const submit = async () => {
+      if (ui.draft().trim()) throw new Error('输入框有草稿，请清空后重新启动桥接');
+      await waitIdle();
+      // 记下当前已有的回复条数与最后一条内容，之后用来判断哪条是这一题的新回答
+      const baseline = ui.count();
+      const baselineText = ui.replies().slice(-1)[0] || '';
+      // 图片先挂上去，上传和打字并行
+      if (job.images?.length) await attachImages(job.images);
+      if (typing) {
+        // 一次 setValue 写满会和真人操作差别太大：停顿一下，再按随机长度分片敲进去
+        await sleep(jitter(pace.beforeType, random));
+        const step = Math.max(pace.chunk[0], Math.ceil(job.prompt.length / 80));
+        let typed = '';
+        while (typed.length < job.prompt.length) {
+          const size = Math.max(2, Math.round(step * (0.6 + random() * 0.8)));
+          typed = job.prompt.slice(0, typed.length + size);
+          ui.fill(typed);
+          check();
+          await sleep(jitter(pace.chunkGap, random));
+        }
+        if (ui.draft() !== job.prompt) ui.fill(job.prompt);
+        await sleep(jitter(pace.beforeSend, random));
+      } else {
+        ui.fill(job.prompt);
+      }
+      // 图片上传是异步的，给缩略图/上传收尾留点时间再点发送
+      if (job.images?.length) await sleep(1200 + random() * 800);
+      // 带图时上传期间发送按钮会一直灰着，给更长的等待
+      const sendDeadline = Math.min(job.deadline, now() + (job.images?.length ? 20000 : 3000));
+      while (!ui.canSend()) {
+        check();
+        if (now() >= sendDeadline) throw new Error('未能启用发送按钮，请检查网页');
+        await sleep(50);
+      }
       check();
-      if (now() >= sendDeadline) throw new Error('未能启用发送按钮，请检查网页');
-      await sleep(50);
-    }
+      ui.clickSend(); // Never retry a send: an uncertain send pauses the bridge.
+      const sentAt = now();
+      const ackDeadline = Math.min(job.deadline, now() + 8000);
+      while (ui.draft().trim()) {
+        check();
+        // 限额提示常常在点击后立刻出现、同时草稿留在输入框；只有确认“没发出去”才允许换会话重发
+        if (now() - lastScan >= limits.scanIntervalMs) {
+          lastScan = now();
+          const notice = readNotice();
+          if (notice?.kind === 'daily') {
+            if (limits.notifyDailyQuota) notify(QUOTA_MESSAGE, notice.text);
+            throw quotaError(notice.text);
+          }
+          if (notice?.kind === 'conversation' && now() - sentAt > 1500) {
+            const error = new Error('发送被网页限制：' + notice.text);
+            error.code = 'SEND_BLOCKED';
+            throw error;
+          }
+        }
+        if (now() >= ackDeadline) throw new Error('网页未确认发送，请手动检查，避免重复发送');
+        await sleep(100);
+      }
+      // 在首页发送第一条消息后地址会从 / 切成 /a/chat/s/<id>；等它稳定再记快照，否则监视阶段会误判串题
+      let conversationUrl = ui.url();
+      if (!/\/a\/chat\/s\//.test(conversationUrl)) {
+        const settleDeadline = Math.min(job.deadline, now() + 5000);
+        while (now() < settleDeadline && !/\/a\/chat\/s\//.test(ui.url())) await sleep(100);
+        conversationUrl = ui.url();
+      }
+      return { sentAt, baseline, baselineText, conversationUrl };
+    };
+
+    // 先看限额文案再校验控件：额度耗尽时输入框会被提示条替换，ui.check 会先报“找不到控件”
+    const preflight = readNotice();
     check();
-    ui.clickSend(); // Never retry a send: an uncertain send pauses the bridge.
-    const sentAt = now();
-    const ackDeadline = Math.min(job.deadline, now() + 8000);
-    while (ui.draft().trim()) {
-      check();
-      if (now() >= ackDeadline) throw new Error('网页未确认发送，请手动检查，避免重复发送');
-      await sleep(100);
+    // 发送前先看一次：打开长期不活跃的旧会话时，网页会直接给出限制提示
+    if (preflight?.kind === 'daily') {
+      if (limits.notifyDailyQuota) notify(QUOTA_MESSAGE, preflight.text);
+      throw quotaError(preflight.text);
     }
-    const conversationUrl = ui.url();
+    if (preflight?.kind === 'input') return emptyAnswer('网页提示题目超长，已跳过：' + preflight.text);
+    if (preflight?.kind === 'conversation' && limits.rotate) {
+      try { await rotate(); } catch (error) { return emptyAnswer('当前对话不可用且无法新开对话：' + error.message, true); }
+    }
+
+    let rotations = 0;
+    let attempt;
+    while (!attempt) {
+      try {
+        attempt = await submit();
+      } catch (error) {
+        if (error?.code !== 'SEND_BLOCKED') throw error;
+        if (!limits.rotate || rotations >= limits.maxRotationsPerJob || remaining() < limits.minRemainingMsForRotate) {
+          return emptyAnswer('当前对话已达消息上限，未能新开对话重试：' + error.message);
+        }
+        rotations += 1;
+        try { await rotate(); } catch (error) { return emptyAnswer('发送被限制且无法新开对话：' + error.message, true); }
+      }
+    }
+
     let stableText = '', stableSince = 0, stalled = false;
     while (true) {
       check();
-      if (ui.url() !== conversationUrl) throw new Error('对话页面已切换，桥接暂停以避免串题');
+      if (ui.url() !== attempt.conversationUrl) throw new Error('对话页面已切换，桥接暂停以避免串题');
       // 是不是「这一题的新回复」：条数变多了，或者最后一条内容变了。
       // 只用条数会在长对话里失灵（消息列表虚拟化/重渲染时段数不涨），表现为答案已出却一直读秒。
       const replies = ui.replies();
       const latest = replies.slice(-1)[0] || '';
-      const fresh = ui.count() > baseline || (latest && latest !== baselineText);
+      const fresh = ui.count() > attempt.baseline || (latest && latest !== attempt.baselineText);
       // 只看回复正文是否稳定：网页的“生成中”状态可能比答案晚结束很多（实测 93 秒 vs 3 秒），
       // 不能拿它当回传条件，否则 OCS 会一直转圈。
       const match = fresh
         ? replies.map(text => ({ text, value: parseAnswer(text, job.input?.type) })).filter(item => item.value).pop()
         : null;
       // 20 秒还没认出来就留一条诊断，方便对着控制台查是哪一半判定失效
-      if (!match && replies.length && !stalled && now() - sentAt > 20000) {
+      if (!match && replies.length && !stalled && now() - attempt.sentAt > 20000) {
         stalled = true;
-        console.log(`[OCS bridge] 疑似卡住：条数=${ui.count()} 基线=${baseline} 文本变过=${latest !== baselineText}`);
+        console.log(`[OCS bridge] 疑似卡住：条数=${ui.count()} 基线=${attempt.baseline} 文本变过=${latest !== attempt.baselineText}`);
       }
       if (match) {
         if (match.text !== stableText) { stableText = match.text; stableSince = now(); }
         else if (now() - stableSince >= 600) return { bridge_id: job.id, ...match.value };
       } else { stableText = ''; }
+
+      // 限额只按固定间隔采样：body.innerText 在长对话里不便宜，150ms 一次没必要
+      if (now() - lastScan >= limits.scanIntervalMs) {
+        lastScan = now();
+        const notice = readNotice();
+        if (notice?.kind === 'daily') {
+          if (limits.notifyDailyQuota) notify(QUOTA_MESSAGE, notice.text);
+          throw quotaError(notice.text);
+        }
+        if (notice?.kind === 'input') return emptyAnswer('网页提示题目超长，已跳过：' + notice.text);
+        if (notice?.kind === 'conversation') {
+          const draftKept = ui.draft().trim().length > 0;
+          // 草稿已清空或回复已增长，说明题目很可能已经发出；重发会重复提问，宁可放弃本题
+          if (!draftKept || fresh) {
+            return emptyAnswer('对话可能已达上限，但无法确认是否已发出，为避免重复发送未重试：' + notice.text);
+          }
+          if (limits.rotate && rotations < limits.maxRotationsPerJob && remaining() >= limits.minRemainingMsForRotate) {
+            rotations += 1;
+            try { await rotate(); } catch (error) { return emptyAnswer('无法新开对话，已跳过本题：' + error.message, true); }
+            try {
+              attempt = await submit();
+            } catch (error) {
+              if (error?.code === 'SEND_BLOCKED') return emptyAnswer('新会话仍被限制，已跳过本题：' + error.message);
+              throw error;
+            }
+            continue;
+          }
+          return emptyAnswer('当前对话已达消息上限，未能新开对话重试：' + notice.text);
+        }
+      }
       await sleep(150);
     }
   }
@@ -253,6 +416,35 @@
         one(selectors.input);
       },
       draft: () => one(selectors.input).value,
+      // 限制提示混在页面文本里：把回答块剔掉，避免模型回答里出现「请开启新对话」被当成系统提示
+      noticeText: () => {
+        if (!doc.body) return '';
+        let text = doc.body.innerText || '';
+        for (const element of visible(selectors.answer)) {
+          const block = element.innerText;
+          if (block) text = text.split(block).join(' ');
+        }
+        return text;
+      },
+      // 整页文本：只用于每日额度的整句兜底（提示可能落在被剔除的回答区里）
+      bodyText: () => (doc.body ? doc.body.innerText || '' : ''),
+      // 只点侧边栏的“开启新对话”，绝不整页跳转：重载会让油猴脚本重新初始化，桥接随之掉线
+      newChat: () => {
+        const pattern = /^(开启新对话|新对话|新建对话)$/;
+        const pick = nodes => {
+          const matches = [...nodes].filter(node => node.getClientRects().length && pattern.test((node.innerText || '').trim()));
+          if (!matches.length) return null;
+          // 同一段文字会同时命中父容器和子节点：点最深的那个，事件向上冒泡才能落到真正的处理器上
+          return matches.find(node => !matches.some(other => other !== node && node.contains(other)));
+        };
+        const target = pick(doc.querySelectorAll('button, a, [role=button]')) ||
+          pick(doc.querySelectorAll('div, span')) ||
+          [...doc.querySelectorAll('a[href="/"], a[href="/a/chat"]')].find(node => node.getClientRects().length);
+        if (!target) return false;
+        target.click();
+        return true;
+      },
+      isFreshChat: () => !one(selectors.input).value.trim() && visible(selectors.answer).length === 0,
       isIdle: () => {
         const buttons = visible(selectors.send);
         return buttons.length === 1 && disabled(buttons[0]) && !buttons[0].querySelector('.ds-loading') && !one(selectors.input).value.trim();
@@ -279,13 +471,33 @@
   }
   // Node's tests import pure protocol/runner helpers; the installed userscript runs below.
   if (typeof module === 'object' && module.exports) {
-    module.exports = { parseAnswer, splitAnswers, compareVersion, runJob, createDomAdapter, selectors };
+    module.exports = { parseAnswer, splitAnswers, compareVersion, runJob, createDomAdapter, selectors, classifyNotice, LIMITS };
     return;
   }
 
   const clientId = crypto.randomUUID();
+  // 轮换后靠它判断页面有没有被整页重载：重载会让油猴脚本重新初始化，这份标记随之消失
+  window.__ocsBridgeSession = clientId;
+  let lastNotifyAt = 0;
+  /** 每日额度熔断时的系统通知：优先油猴 API，其次浏览器通知，最后退回控制台 */
+  function notify(title, text) {
+    if (!LIMITS.notifyDailyQuota) return;
+    if (Date.now() - lastNotifyAt < LIMITS.notifyThrottleMs) return;
+    lastNotifyAt = Date.now();
+    const body = String(text || '').slice(0, 160);
+    try {
+      if (typeof GM_notification === 'function') { GM_notification({ title, text: body, timeout: 20000 }); return; }
+    } catch { /* 继续降级 */ }
+    try {
+      if (typeof Notification === 'function') {
+        if (Notification.permission === 'granted') { new Notification(title, { body }); return; }
+        if (Notification.permission === 'default') void Notification.requestPermission();
+      }
+    } catch { /* 继续降级 */ }
+    console.error(`[OCS bridge] ${title}：${body}`);
+  }
   const ui = createDomAdapter(document);
-  let active = false, loop = null, heartbeat = null, heartbeatBusy = false, registered = false, stopping = null, epoch = 0, answered = 0;
+  let active = false, loop = null, heartbeat = null, heartbeatBusy = false, registered = false, stopping = null, epoch = 0, answered = 0, rotateFailures = 0;
   let address = GM_getValue('address', 'http://127.0.0.1:3000');
   let token = GM_getValue('token', '');
   const host = document.createElement('div');
@@ -440,7 +652,7 @@
     if (stopping) return stopping;
     if (registered) {
       registered = false;
-      stopping = request('/bridge/pause').catch(() => {});
+      stopping = request('/bridge/pause', { reason: message }).catch(() => {});
       try { await stopping; } finally { stopping = null; }
     }
   }
@@ -479,18 +691,33 @@
           let answer;
           try {
             display('正在解题：' + job.input.question.slice(0,80), 'busy');
-            answer = await runJob(job, ui, { running: () => active, blobBase: address });
+            answer = await runJob(job, ui, { running: () => active, blobBase: address, notify,
+              alive: () => window.__ocsBridgeSession === clientId });
           } finally { clearInterval(probe); }
           if (!active) break;
-          await request('/bridge/result', { id: job.id, answer });
+          // rotateFailed 只是本地标记，回传前剥掉；连续多次失败说明页面已没法自愈，停桥接等人处理
+          const { rotateFailed, ...result } = answer;
+          await request('/bridge/result', { id: job.id, answer: result });
           answered += 1;
+          if (rotateFailed) {
+            rotateFailures += 1;
+            if (rotateFailures >= LIMITS.pauseAfterRotateFailures) {
+              await stop('连续多次无法新开对话，请手动清理网页会话后重新启动。');
+              break;
+            }
+          } else rotateFailures = 0;
           await cooldown(nextCooldown(answered));
           if (!active) break;
-          display('本题已返回，等待下一题。', 'ok');
+          display(rotateFailed ? '本题未作答：无法新开对话。' : '本题已返回，等待下一题。', rotateFailed ? 'error' : 'ok');
         }
         await new Promise(resolve => setTimeout(resolve, 200));
       }
-    } catch (error) { if (active) await stop(error.message + '\n请检查网页后重新点击启动。'); }
+    } catch (error) {
+      if (!active) return;
+      // 每日额度用尽属于熔断：先由 runJob 发过系统通知，这里只负责停桥接并留下原因
+      if (error?.code === 'QUOTA_DAILY') await stop(error.message + '\n额度恢复后请重新点击启动。');
+      else await stop(error.message + '\n请检查网页后重新点击启动。');
+    }
   }
   start.addEventListener('click', async () => {
     if (loop) return;
